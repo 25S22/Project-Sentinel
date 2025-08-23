@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# --- 1. CLEAN SLATE: Flush all existing rules and chains ---
+echo "Flushing all existing iptables rules..."
+iptables -F
+iptables -X
+iptables -Z
+iptables -t nat -F
+iptables -t nat -X
+iptables -t mangle -F
+iptables -t mangle -X
+
+# --- 2. BASELINE SECURITY: Set default policies to DROP ---
+echo "Setting default policies to DROP..."
+iptables -P INPUT DROP
+iptables -P FORWARD DROP
+iptables -P OUTPUT ACCEPT
+
+# --- 3. CORE RULES: Allow essential traffic ---
+echo "Adding essential firewall rules..."
+# Allow loopback traffic (system talking to itself)
+iptables -A INPUT -i lo -j ACCEPT
+
+# Allow traffic that is part of an established connection
+iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+# --- 4. EXCEPTION RULES: Allow specific services for your project ---
+echo "Allowing SSH and HTTP traffic..."
+# Allow SSH on TCP port 22
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+
+# [cite_start]Allow HTTP on TCP port 80 (for the attack simulation [cite: 9])
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+
+# --- 5. PERSISTENCE: Install tool to save rules and save them ---
+echo "Installing persistence package and saving rules..."
+apt-get update
+# The '-y' flag answers "yes" to the installation prompts
+apt-get install iptables-persistent -y
+netfilter-persistent save
+
+# --- 6. VERIFICATION: Display the final ruleset ---
+echo "Firewall configuration complete. Displaying rules:"
+iptables -L -v -n
