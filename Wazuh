@@ -1,43 +1,20 @@
-## The Master Fix-and-Install Script
-Follow these steps on your Kali Purple (Defender) VM:
-
-Save the Script: Create a new file named fix-and-install-wazuh.sh.
-
-Bash
-
-nano fix-and-install-wazuh.sh
-Copy and Paste: Copy the entire script block below and paste it into the nano editor.
-
-Save and Exit: Press Ctrl + X, then Y, then Enter.
-
-Make it Executable:
-
-Bash
-
-chmod +x fix-and-install-wazuh.sh
-Run the Script: Execute it with sudo. It will handle everything from here.
-
-Bash
-
-sudo ./fix-and-install-wazuh.sh
-Bash
-
 #!/bin/bash
 set -e # Exit immediately if any command fails
 
-echo "### STARTING WAZUH DEEP CLEAN AND FRESH INSTALLATION ###"
+echo "### STARTING WAZUH DEEP CLEAN, PURGE, AND FRESH INSTALLATION ###"
 
-# --- PHASE 1: FIX BROKEN PACKAGE MANAGER ---
-echo "[+] Phase 1/5: Forcefully removing broken Wazuh packages..."
-dpkg --remove --force-remove-reinstreq wazuh-agent || echo "wazuh-agent not found or already removed. Continuing."
-dpkg --remove --force-remove-reinstreq wazuh-manager || echo "wazuh-manager not found or already removed. Continuing."
+# --- PHASE 1: PURGE PACKAGES & FIX APT ---
+echo "[+] Phase 1/5: Purging broken Wazuh packages..."
+# 'purge' removes packages AND their system-wide configuration files.
+apt-get purge -y wazuh-agent || echo "wazuh-agent not found or already purged. Continuing."
+apt-get purge -y wazuh-manager || echo "wazuh-manager not found or already purged. Continuing."
 echo "[+] Cleaning up APT..."
 apt-get --fix-broken install -y
 apt autoremove -y
 apt-get clean
 
-# --- PHASE 2: DEEP CLEAN THE FILESYSTEM ---
-echo "[+] Phase 2/5: Manually deleting all leftover Wazuh directories..."
+# --- PHASE 2: DEEP CLEAN THE FILESYSTEM (FAILSAFE) ---
+echo "[+] Phase 2/5: Manually deleting all leftover Wazuh directories for a guaranteed clean slate..."
 rm -rf /etc/wazuh-*
 rm -rf /var/lib/wazuh-*
 rm -rf /usr/share/wazuh-*
