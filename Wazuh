@@ -1,13 +1,54 @@
-# 1. Check Core Directories
-sudo ls -ld /var/ossec/
-sudo ls -ld /etc/wazuh-indexer/
-sudo ls -ld /usr/share/wazuh-dashboard/
+No, this process should not take a lot of time. Following these steps should take you about 10-15 minutes and will fix the issue completely.
 
-# 2. Check Critical Binaries
-sudo ls -l /var/ossec/bin/ossec-logtest
-sudo ls -l /var/ossec/bin/wazuh-control
-sudo ls -l /var/ossec/bin/agent_control
+You are correct, the standard commands are failing because the wazuh-agent package is so broken that your system's package manager (dpkg) cannot handle it automatically.
 
-# 3. Check Service and Configuration Files
-sudo ls -l /var/ossec/etc/ossec.conf
-sudo ls -l /etc/wazuh-indexer/opensearch.yml
+We need to manually and forcefully remove the broken package, then proceed with the clean reinstallation.
+
+## Step 1: Forcefully Remove the Broken Package
+This command tells the package manager to remove wazuh-agent and ignore the errors from its failing scripts. This is the key step to getting your package manager working again.
+
+Run these commands on your Kali Purple VM:
+
+Bash
+
+# Force remove the broken wazuh-agent package
+sudo dpkg --remove --force-remove-reinstreq wazuh-agent
+
+# Do the same for wazuh-manager, as it is likely also broken
+sudo dpkg --remove --force-remove-reinstreq wazuh-manager
+## Step 2: Clean Up and Reset Your Package Manager
+Now that the broken package is gone, we can run the standard cleanup commands. They should succeed now.
+
+Bash
+
+# Fix any remaining broken dependencies
+sudo apt-get --fix-broken install
+
+# Remove any old packages that are no longer needed
+sudo apt autoremove -y
+
+# Clear the downloaded package cache
+sudo apt-get clean
+At this point, your package manager is fixed and healthy.
+
+## Step 3: Perform the Definitive "Deep Clean"
+Now, we must manually delete all the leftover configuration files that caused the errors in the first place. Do not skip this step.
+
+Bash
+
+# Warning: Be very careful to type these commands exactly as shown.
+sudo rm -rf /etc/wazuh-*
+sudo rm -rf /var/lib/wazuh-*
+sudo rm -rf /usr/share/wazuh-*
+sudo rm -rf /var/ossec
+## Step 4: The Fresh Reinstallation
+Your system is now completely clean. You are ready for a fresh, successful installation.
+
+Bash
+
+# Re-download the installation script
+curl -sO https://packages.wazuh.com/4.7/wazuh-install.sh
+
+# Run the installation
+sudo bash ./wazuh-install.sh -a -i
+Following these steps in order is the definitive way to fix a broken package manager and will give you a clean slate for a successful Wazuh installation.
