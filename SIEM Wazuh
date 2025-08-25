@@ -1,73 +1,42 @@
-## 1. Upgrade Your Lab with a SIEM Dashboard (Wazuh)
-This will turn your separate alerts into a centralized, visual command center. This entire process should take about 30-45 minutes.
+Of course. Since your firewall and IDS are running, the next step is to install a SIEM (Security Information and Event Management) system. This will give you the central dashboard you need for visualization.
 
-A. Install the Wazuh All-in-One Server
-On your Defender (Kali Purple) VM, run the following command. This single script will install the Wazuh server, the data indexer, and the web dashboard interface. It will take a few minutes to complete.
+We will use Wazuh, which provides a powerful dashboard to see the alerts from Suricata.
 
-Bash
-
-curl -sO https://packages.wazuh.com/4.7/wazuh-install.sh && sudo bash ./wazuh-install.sh -a
-When it's finished, it will print a password for the admin user. Save this password!
-
-B. Integrate Suricata with Wazuh
-Now, we'll tell the local Wazuh agent on your Defender VM to read Suricata's alerts.
-
-Edit the Wazuh Agent Configuration: Open the agent's configuration file with nano:
+## 1. Defender VM: Install Wazuh SIEM & Dashboard
+Run these commands on your Kali Purple (Defender) VM. This single script installs the Wazuh server and the web dashboard.
 
 Bash
 
-sudo nano /var/ossec/etc/ossec.conf
-Add the Suricata Log: Scroll down to the bottom of the file and paste this block of code just before the final </ossec_config> tag. This tells Wazuh to monitor the eve.json file where Suricata logs all its alerts.
+# Download and run the all-in-one installation script
+curl -sO https://packages.wazuh.com/4.7/wazuh-install.sh
+sudo bash ./wazuh-install.sh -a
+Important: At the end of the installation, it will print the admin password. Copy and save this password.
 
-XML
+## 2. Defender VM: Integrate Suricata Logs into Wazuh
+Now, tell the Wazuh agent to read the alerts that Suricata generates.
 
+Bash
+
+# Add the Suricata log file location to the Wazuh agent's configuration
+echo "
 <localfile>
   <log_format>json</log_format>
   <location>/var/log/suricata/eve.json</location>
 </localfile>
-Save and Exit: Press Ctrl + X, then Y, then Enter.
+" | sudo tee -a /var/ossec/etc/ossec.conf > /dev/null
 
-Restart the Wazuh Agent to apply the changes:
-
-Bash
-
+# Restart the Wazuh agent to apply the new configuration
 sudo systemctl restart wazuh-agent
-C. Access Your New Dashboard
-In your web browser on your host machine, navigate to https://<YOUR_DEFENDER_IP>. You may get a browser warning about a self-signed certificate; just proceed. Log in with the username admin and the password that the installation script gave you.
+## 3. Test and Verify on the Dashboard
+Your setup is now complete. The final step is to generate an alert and see it appear on your new dashboard.
 
-Explore the dashboard! You now have a fully functional SIEM.
+Access the Dashboard: Open a web browser and go to your Defender VM's IP address: https://192.168.10.3.
 
-## 2. Your Step-by-Step Demo Plan for Tomorrow プレゼンテーション
-Here is a professional, narrative-driven plan to present your work.
+Log in with the username admin and the password you saved.
 
-Part 1: The Introduction (The "Why")
-What to Say: "Good morning. My project, Sentinel, demonstrates a layered, automated cyber defense in a box using open-source tools on Kali Purple. I've built a virtual lab with a defender and an attacker to simulate a realistic environment. I'll now demonstrate the three key layers of our defense: the Firewall, the Intrusion Detection System, and the SIEM."
-
-Part 2: The Firewall (The Gatekeeper)
-Action: On your Attacker VM, run the nmap scan.
-
-Bash
-
-nmap -p 1-100 192.168.10.3
-What to Show: Show the nmap output on the attacker's screen.
-
-What to Say: "First, we test the perimeter with a port scan. As you can see, our iptables firewall is doing its job, blocking all unauthorized ports and significantly reducing our attack surface. This is our first and most basic layer of defense."
-
-Part 3: The IDS (The Guard)
-Action: On your Attacker VM, run the curl exploit simulation.
+Generate an Alert: From your Attacker VM, run the curl command again.
 
 Bash
 
 curl -A "() { :;}; /bin/bash" http://192.168.10.3
-What to Show: Have the live Suricata log visible in a terminal on the Defender VM (sudo tail -f /var/log/suricata/fast.log).
-
-What to Say: "Next, we simulate a more advanced attack against an allowed service—a web server on port 80. While the firewall lets this traffic through, our IDS, Suricata, inspects the content. As you can see here in the live logs, Suricata immediately detected a malicious signature associated with the Shellshock vulnerability and generated a high-priority alert."
-
-Part 4: The SIEM (The Command Center)
-Action: (This happens automatically from the previous step).
-
-What to Show: Switch to your web browser showing the Wazuh Dashboard. Navigate to Modules > Security events. You will see the Suricata alert at the top. Click on it to expand the details.
-
-What to Say: "Finally, this is where we get true visualization and centralized management. That alert from Suricata was automatically sent to our SIEM, Wazuh. On this dashboard, you can see the same Shellshock alert, but now it's enriched, indexed, and can be correlated with other events across our network. We can see the attacker's IP, the rule that was triggered, and the alert's severity. This provides the data-driven insights needed for an effective security operations team to respond."
-
-This structured approach will clearly and professionally demonstrate your project's success from start to finish. Good luck!
+Find the Alert in Wazuh: In the Wazuh dashboard, go to the menu on the top left, then navigate to Modules > Security events. You will see the "Shellshock" alert from Suricata at the top of the list. You can click on it to see all the enriched details.
