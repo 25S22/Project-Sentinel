@@ -1,54 +1,80 @@
-No, this process should not take a lot of time. Following these steps should take you about 10-15 minutes and will fix the issue completely.
+## The Master Fix-and-Install Script
+Follow these steps on your Kali Purple (Defender) VM:
 
-You are correct, the standard commands are failing because the wazuh-agent package is so broken that your system's package manager (dpkg) cannot handle it automatically.
-
-We need to manually and forcefully remove the broken package, then proceed with the clean reinstallation.
-
-## Step 1: Forcefully Remove the Broken Package
-This command tells the package manager to remove wazuh-agent and ignore the errors from its failing scripts. This is the key step to getting your package manager working again.
-
-Run these commands on your Kali Purple VM:
+Save the Script: Create a new file named fix-and-install-wazuh.sh.
 
 Bash
 
-# Force remove the broken wazuh-agent package
-sudo dpkg --remove --force-remove-reinstreq wazuh-agent
+nano fix-and-install-wazuh.sh
+Copy and Paste: Copy the entire script block below and paste it into the nano editor.
 
-# Do the same for wazuh-manager, as it is likely also broken
-sudo dpkg --remove --force-remove-reinstreq wazuh-manager
-## Step 2: Clean Up and Reset Your Package Manager
-Now that the broken package is gone, we can run the standard cleanup commands. They should succeed now.
+Save and Exit: Press Ctrl + X, then Y, then Enter.
 
-Bash
-
-# Fix any remaining broken dependencies
-sudo apt-get --fix-broken install
-
-# Remove any old packages that are no longer needed
-sudo apt autoremove -y
-
-# Clear the downloaded package cache
-sudo apt-get clean
-At this point, your package manager is fixed and healthy.
-
-## Step 3: Perform the Definitive "Deep Clean"
-Now, we must manually delete all the leftover configuration files that caused the errors in the first place. Do not skip this step.
+Make it Executable:
 
 Bash
 
-# Warning: Be very careful to type these commands exactly as shown.
-sudo rm -rf /etc/wazuh-*
-sudo rm -rf /var/lib/wazuh-*
-sudo rm -rf /usr/share/wazuh-*
-sudo rm -rf /var/ossec
-## Step 4: The Fresh Reinstallation
-Your system is now completely clean. You are ready for a fresh, successful installation.
+chmod +x fix-and-install-wazuh.sh
+Run the Script: Execute it with sudo. It will handle everything from here.
 
 Bash
 
-# Re-download the installation script
+sudo ./fix-and-install-wazuh.sh
+Bash
+
+#!/bin/bash
+set -e # Exit immediately if any command fails
+
+echo "### STARTING WAZUH DEEP CLEAN AND FRESH INSTALLATION ###"
+
+# --- PHASE 1: FIX BROKEN PACKAGE MANAGER ---
+echo "[+] Phase 1/5: Forcefully removing broken Wazuh packages..."
+dpkg --remove --force-remove-reinstreq wazuh-agent || echo "wazuh-agent not found or already removed. Continuing."
+dpkg --remove --force-remove-reinstreq wazuh-manager || echo "wazuh-manager not found or already removed. Continuing."
+echo "[+] Cleaning up APT..."
+apt-get --fix-broken install -y
+apt autoremove -y
+apt-get clean
+
+# --- PHASE 2: DEEP CLEAN THE FILESYSTEM ---
+echo "[+] Phase 2/5: Manually deleting all leftover Wazuh directories..."
+rm -rf /etc/wazuh-*
+rm -rf /var/lib/wazuh-*
+rm -rf /usr/share/wazuh-*
+rm -rf /var/ossec
+
+# --- PHASE 3: PREPARE SYSTEM ENVIRONMENT ---
+echo "[+] Phase 3/5: Preparing system..."
+echo "[+] Updating system packages..."
+apt-get update && apt-get upgrade -y
+echo "[+] Applying required kernel setting (vm.max_map_count)..."
+sysctl -w vm.max_map_count=262144
+echo "vm.max_map_count=262144" | tee -a /etc/sysctl.conf
+
+# --- PHASE 4: FRESH WAZUH INSTALLATION ---
+echo "[+] Phase 4/5: Starting fresh Wazuh installation..."
+rm -f ./wazuh-install.sh* # Remove old installer script if it exists
 curl -sO https://packages.wazuh.com/4.7/wazuh-install.sh
+bash ./wazuh-install.sh -a -i
 
-# Run the installation
-sudo bash ./wazuh-install.sh -a -i
-Following these steps in order is the definitive way to fix a broken package manager and will give you a clean slate for a successful Wazuh installation.
+# --- PHASE 5: VERIFICATION AND FINALIZATION ---
+echo "[+] Phase 5/5: Verifying installation and enabling services..."
+echo "[+] Enabling services to start on boot..."
+systemctl enable wazuh-indexer
+systemctl enable wazuh-manager
+systemctl enable filebeat
+systemctl enable wazuh-agent
+
+echo "[+] Checking service statuses..."
+systemctl is-active --quiet wazuh-indexer && echo "Wazuh Indexer is RUNNING." || (echo "ERROR: Wazuh Indexer failed to start." && exit 1)
+systemctl is-active --quiet wazuh-manager && echo "Wazuh Manager is RUNNING." || (echo "ERROR: Wazuh Manager failed to start." && exit 1)
+systemctl is-active --quiet filebeat && echo "Filebeat is RUNNING." || (echo "ERROR: Filebeat failed to start." && exit 1)
+systemctl is-active --quiet wazuh-agent && echo "Wazuh Agent is RUNNING." || (echo "ERROR: Wazuh Agent failed to start." && exit 1)
+
+echo "[+] Verifying local agent connection..."
+/var/ossec/bin/agent_control -l
+
+echo "### INSTALLATION COMPLETE ###"
+echo "Your Wazuh admin password is:"
+grep -oP 'admin_password: \K\w+' wazuh-install-files/wazuh-passwords.txt
+echo "Access the dashboard at https://<your_ip>"
