@@ -1,0 +1,57 @@
+You are absolutely right. If you have 8GB of RAM and the CPU usage is low, the problem isn't general performance. It's a specific system configuration issue that's causing the installer to hang.
+
+This is a known issue. The Wazuh Indexer requires a specific Linux kernel setting to be increased. We will adjust that setting, perform a deep clean, and then reinstall.
+
+## 1. The Fix: Increase vm.max_map_count
+The Wazuh Indexer needs to manage a large number of memory map areas. The default limit in Kali is too low, causing the installation to freeze.
+
+Check the Current Limit: Open a terminal on your Kali Purple VM and check the current value. It will likely be 65530.
+
+Bash
+
+sysctl vm.max_map_count
+Increase the Limit Temporarily: We will increase it to the recommended value of 262144.
+
+Bash
+
+sudo sysctl -w vm.max_map_count=262144
+Make the Change Permanent: This is crucial, as the temporary setting will be lost on reboot.
+
+Bash
+
+# This command appends the setting to your system's configuration file
+echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+## 2. Perform a "Deep Clean" of the Failed Installation
+To ensure no corrupted files are left over, we need to do a more thorough cleanup.
+
+Run the Official Uninstaller:
+
+Bash
+
+sudo bash ./wazuh-install.sh -u -i
+Manually Delete Wazuh Directories: The uninstaller can sometimes miss things. Let's remove them completely.
+Warning: Be very careful with these commands.
+
+Bash
+
+sudo rm -rf /etc/wazuh-indexer
+sudo rm -rf /var/lib/wazuh-indexer
+sudo rm -rf /usr/share/wazuh-indexer
+sudo rm -rf /etc/wazuh-dashboard
+sudo rm -rf /usr/share/wazuh-dashboard
+Delete the Old Script:
+
+Bash
+
+rm ./wazuh-install.sh
+## 3. Retry the Installation
+Now, with the kernel setting fixed and the old files gone, let's try again from a clean slate.
+
+Bash
+
+# Re-download the script
+curl -sO https://packages.wazuh.com/4.7/wazuh-install.sh
+
+# Run the installation again
+sudo bash ./wazuh-install.sh -a -i
+With the vm.max_map_count setting corrected, the Wazuh Indexer should now have the resources it needs to start properly, and your installation will proceed past the point where it was stuck.
