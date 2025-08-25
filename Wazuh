@@ -1,33 +1,13 @@
-Bash
+# 1. Check Core Directories
+sudo ls -ld /var/ossec/
+sudo ls -ld /etc/wazuh-indexer/
+sudo ls -ld /usr/share/wazuh-dashboard/
 
-# Check the main Agent/Manager directory
-ls -ld /var/ossec/
+# 2. Check Critical Binaries
+sudo ls -l /var/ossec/bin/ossec-logtest
+sudo ls -l /var/ossec/bin/wazuh-control
+sudo ls -l /var/ossec/bin/agent_control
 
-# Check the Indexer configuration directory
-ls -ld /etc/wazuh-indexer/
-
-# Check the Dashboard application directory
-ls -ld /usr/share/wazuh-dashboard/
-2. Check Critical Binaries (Executables)
-These are the command-line tools needed to manage and troubleshoot Wazuh.
-
-Bash
-
-# The log test tool we couldn't find before
-ls -l /var/ossec/bin/ossec-logtest
-
-# The main Wazuh control script
-ls -l /var/ossec/bin/wazuh-control
-
-# The agent control script
-ls -l /var/ossec/bin/agent_control
-3. Check Service and Configuration Files
-These files are essential for the services to run.
-
-Bash
-
-# Check the Wazuh agent/manager configuration file
-ls -l /var/ossec/etc/ossec.conf
-
-# Check the Wazuh Indexer configuration file
-ls -l /etc/wazuh-indexer/opensearch.yml
+# 3. Check Service and Configuration Files
+sudo ls -l /var/ossec/etc/ossec.conf
+sudo ls -l /etc/wazuh-indexer/opensearch.yml
