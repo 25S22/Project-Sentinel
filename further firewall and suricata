@@ -1,91 +1,100 @@
-Of course. Here is a consolidated list of all the commands for setting up and demonstrating your firewall and IDS. You can run these one by one to achieve the final result.
+Of course. Here is the complete, consolidated list of commands for your two-terminal demonstration.
 
-## 1. Defender VM: Configure Firewall (iptables)
-Run these commands on your Kali Purple (Defender) VM. It's best to save this as a script (configure-firewall.sh), make it executable (chmod +x), and then run it.
-
+On Defender VM: Initial Script Setup (Do this first)
 Bash
 
-# --- 1. CLEAN SLATE: Flush all existing rules and chains ---
-echo "Flushing all existing iptables rules..."
-iptables -F
-iptables -X
-iptables -Z
-iptables -t nat -F
-iptables -t nat -X
-iptables -t mangle -F
-iptables -t mangle -X
+# 1. Create the main firewall script
+nano firewall-rules.sh
 
-# --- 2. BASELINE SECURITY: Set default policies to DROP ---
-echo "Setting default policies to DROP..."
+# 2. Paste this content, then save and exit (Ctrl+X, Y, Enter)
+#!/bin/bash
+iptables -F && iptables -X
 iptables -P INPUT DROP
 iptables -P FORWARD DROP
 iptables -P OUTPUT ACCEPT
-
-# --- 3. CORE RULES: Allow essential traffic ---
-echo "Adding essential firewall rules..."
-# Allow loopback traffic (system talking to itself)
 iptables -A INPUT -i lo -j ACCEPT
-
-# Allow traffic that is part of an established connection
 iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-
-# Allow ping requests for troubleshooting
-iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
-
-# --- 4. EXCEPTION RULES: Allow specific services for your project ---
-echo "Allowing SSH and HTTP traffic..."
-# Allow SSH on TCP port 22
 iptables -A INPUT -p tcp --dport 22 -j ACCEPT
-
-# Allow HTTP on TCP port 80 (for the attack simulation)
 iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+echo "[+] Firewall is now ACTIVE."
 
-# --- 5. PERSISTENCE: Install tool to save rules and save them ---
-echo "Installing persistence package and saving rules..."
-apt-get update
-# The '-y' flag answers "yes" to the installation prompts
-apt-get install iptables-persistent -y
-netfilter-persistent save
+# 3. Make it executable
+chmod +x firewall-rules.sh
 
-# --- 6. VERIFICATION: Display the final ruleset ---
-echo "Firewall configuration complete. Displaying rules:"
-iptables -L -v -n
-## 2. Defender VM: Configure IDS (Suricata)
-Run these commands on your Kali Purple (Defender) VM after setting up the firewall.
+# 4. Create the interactive website blocker script
+nano block-website.sh
+
+# 5. Paste this content, then save and exit
+#!/bin/bash
+if [[ "$1" == "--remove" ]]; then
+    echo "Enter the website URL to UNBLOCK:"
+    read -p "> " website
+    ip=$(host $website | awk '/has address/ { print $4 }' | head -n 1)
+    if [ -z "$ip" ]; then echo "Could not resolve IP for $website."; exit 1; fi
+    echo "Removing DROP rule for $website ($ip)..."
+    iptables -D OUTPUT -d $ip -j DROP
+    echo "Rule removed."
+    exit 0
+fi
+echo "Enter the website URL to BLOCK:"
+read -p "> " website
+ip=$(host $website | awk '/has address/ { print $4 }' | head -n 1)
+if [ -z "$ip" ]; then echo "Could not resolve IP for $website."; exit 1; fi
+echo "--- Pinging $website ($ip) BEFORE blocking... ---"
+ping -c 2 $ip
+echo "--- Adding DROP rule for $website ($ip)... ---"
+iptables -A OUTPUT -d $ip -j DROP
+echo "--- Pinging $website ($ip) AFTER blocking... ---"
+ping -c 2 $ip
+echo "Rule for $website has been added."
+
+# 6. Make it executable
+chmod +x block-website.sh
+Demonstration Commands (Run these in order)
+On Defender VM:
+Bash
+
+# 1. Disable Firewall
+sudo iptables -P INPUT ACCEPT && sudo iptables -F
+On Attacker VM:
+Bash
+
+# 2. Ping with Firewall OFF (Should work)
+ping 192.168.10.3
+On Defender VM:
+Bash
+
+# 3. Enable Firewall
+sudo ./firewall-rules.sh
+On Attacker VM:
+Bash
+
+# 4. Ping with Firewall ON (Should work)
+ping 192.168.10.3
+On Defender VM: Set Up Live Monitoring Dashboard
+(Open two terminals side-by-side)
 
 Bash
 
-# Install Suricata and update its ruleset
-sudo apt-get install suricata -y
-sudo suricata-update
-
-# Run Suricata in the background, listening on your internal network (eth1)
-sudo suricata -c /etc/suricata/suricata.yaml -i eth1 -D
-## 3. Defender VM: Set Up Live Monitoring Dashboard
-On your Kali Purple (Defender) VM, open two terminals and arrange them side-by-side to create your live dashboard.
-
-In Terminal 1 (Live Firewall Counters):
-
-Bash
-
+# 5. In Terminal 1: Watch live firewall counters
 watch -n 1 sudo iptables -L -v -n
-In Terminal 2 (Live IDS Alerts):
-
-Bash
-
+```bash
+# 6. In Terminal 2: Watch live IDS alerts
 sudo tail -f /var/log/suricata/fast.log
-## 4. Attacker VM: Run Attack Simulations
-Run these commands from your Attacker VM's terminal to test your defenses.
-
-Test the Firewall's Port Blocking:
-
+On Attacker VM:
 Bash
 
-# Replace 192.168.10.3 with your Defender VM's IP if different
-nmap -p 1-100 192.168.10.3
-Test the IDS's Threat Detection:
-
+# 7. Launch the simulated exploit to test the IDS
+# (Watch both terminals on the Defender VM as you run this)
+curl -A "() { :;}; /bin/bash" [http://192.168.10.3](http://192.168.10.3)
+On Defender VM:
 Bash
 
-# Replace 192.168.10.3 with your Defender VM's IP if different
-curl -A "() { :;}; /bin/bash" http://192.168.10.3
+# 8. Run the interactive website blocker script
+sudo ./block-website.sh
+On Defender VM (After Demo):
+Bash
+
+# 9. To remove the rule created by the script
+sudo ./block-website.sh --remove
