@@ -1,18 +1,19 @@
 #!/bin/bash
 
-# This script now uses 'host <website> 8.8.8.8' to force DNS resolution
-# over the internet-connected interface (eth0).
+# This definitive version uses 'dig' for a more reliable DNS lookup
+# via a public server, ensuring it works on a multi-homed system.
 
 if [[ "$1" == "--remove" ]]; then
     echo "Enter the website URL to UNBLOCK:"
     read -p "> " website
-    # Use 8.8.8.8 to ensure DNS resolution works
-    ip=$(host $website 8.8.8.8 | awk '/has address/ { print $4 }' | head -n 1)
+    # Use 'dig @8.8.8.8' to force DNS resolution over the internet
+    ip=$(dig @8.8.8.8 $website +short A | head -n 1)
     if [ -z "$ip" ]; then
         echo "Could not resolve IP for $website. Please check the URL."
         exit 1
     fi
     echo "Removing DROP rule for $website ($ip)..."
+    # Use -D to Delete the specific rule from the chain
     iptables -D OUTPUT -d $ip -j DROP
     echo "Rule removed."
     exit 0
@@ -20,8 +21,8 @@ fi
 
 echo "Enter the website URL to BLOCK:"
 read -p "> " website
-# Use 8.8.8.8 to ensure DNS resolution works
-ip=$(host $website 8.8.8.8 | awk '/has address/ { print $4 }' | head -n 1)
+# Use 'dig @8.8.8.8' to force DNS resolution over the internet
+ip=$(dig @8.8.8.8 $website +short A | head -n 1)
 if [ -z "$ip" ]; then
     echo "Could not resolve IP for $website. Please check the URL."
     exit 1
@@ -31,6 +32,7 @@ echo "--- Pinging $website ($ip) BEFORE blocking... ---"
 ping -c 2 $ip
 
 echo "--- Adding DROP rule for $website ($ip)... ---"
+# Use -A to Append the rule to the chain
 iptables -A OUTPUT -d $ip -j DROP
 
 echo "--- Pinging $website ($ip) AFTER blocking... ---"
