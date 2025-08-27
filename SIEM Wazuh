@@ -29,7 +29,6 @@ echo "
 sudo systemctl restart wazuh-agent
 ## 3. Test and Verify on the Dashboard
 Your setup is now complete. The final step is to generate an alert and see it appear on your new dashboard.
-AIzaSyBWsQTq4mmao56LExmdgJKxv92wkRRNAnc
 Access the Dashboard: Open a web browser and go to your Defender VM's IP address: https://192.168.10.3.
 
 Log in with the username admin and the password you saved.
