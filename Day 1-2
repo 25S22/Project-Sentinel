@@ -266,86 +266,60 @@ F3Yu2896HRbnmlj+gonIfPitGNffysgFJ0jKPFyP4uh8vzC5lG+EdJIpqij1/s0lJAnFReR7aVZNtlGD
             print(f"Sentinel: {response.text}")
 
 #With added api of virus total! import google.generativeai as genai
+import google.generativeai as genai
 import os
 import sys
 import socket
 import iptc
-import vt         # VirusTotal API library
-import json       # Library for structured logging
-from datetime import datetime # Library for timestamps
+import vt
+import json
+from datetime import datetime
+from urllib.parse import urlparse  # <-- IMPORT THE URL PARSING LIBRARY
 
 # --- CONFIGURATION ---
-# Securely load API keys from environment variables.
-# This prevents secret keys from being saved in your code.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 VT_API_KEY = os.getenv("VT_API_KEY")
-
-# Set the path for your audit log file.
 LOG_FILE_PATH = "sentinel_audit.log"
 
 # --- API KEY VALIDATION ---
-# The script will exit if the necessary API keys are not found.
 if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY not found. Please set it as an environment variable.")
+    raise ValueError("GEMINI_API_KEY not found. Please set the environment variable. If using sudo, try 'sudo -E'.")
 if not VT_API_KEY:
-    raise ValueError("VT_API_KEY not found. Please set it as an environment variable.")
+    raise ValueError("VT_API_KEY not found. Please set it as an environment variable. If using sudo, try 'sudo -E'.")
 
-# Configure the Generative AI model
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- HELPER FUNCTIONS ---
-
 def log_event(data):
-    """
-    Appends a JSON object with a timestamp to the audit log file.
-    This creates a structured, machine-readable log for auditing.
-    """
     try:
         with open(LOG_FILE_PATH, 'a') as log_file:
             log_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "event_data": data
             }
-            # Append the log entry as a new line in JSON format
             log_file.write(json.dumps(log_entry) + '\n')
     except Exception as e:
         print(f"Sentinel: [ERROR] Failed to write to log file: {e}")
 
 def check_virustotal(url):
-    """
-    Checks the reputation of a URL using the VirusTotal API.
-    Returns a dictionary with the analysis results.
-    """
     print(f"Sentinel: Conducting OSINT on {url} via VirusTotal...")
     try:
-        # Initialize the VirusTotal client with your API key
         with vt.Client(VT_API_KEY) as client:
-            # Get the canonical URL ID required by the VT API
             url_id = vt.url_id(url)
-            # Retrieve the analysis object for the URL
             url_analysis = client.get_object(f"/urls/{url_id}")
-
-            # Extract the relevant statistics from the report
             stats = url_analysis.last_analysis_stats
             malicious_votes = stats.get('malicious', 0)
             harmless_votes = stats.get('harmless', 0)
-            
             result = {
-                "url": url,
-                "status": "completed",
-                "malicious_vendors": malicious_votes,
-                "harmless_vendors": harmless_votes,
-                "full_report_id": url_analysis.id
+                "url": url, "status": "completed", "malicious_vendors": malicious_votes,
+                "harmless_vendors": harmless_votes, "full_report_id": url_analysis.id
             }
             return result
-
     except Exception as e:
-        # Return an error message if the API call fails
         return {"url": url, "status": "error", "message": str(e)}
 
 # --- MAIN APPLICATION LOGIC ---
-
 print("Sentinel: Greetings, I am your personal defensive agent. How can I assist you?")
 
 while True:
@@ -354,7 +328,6 @@ while True:
         print("Sentinel: Shutting down. Goodbye!")
         break
 
-    # Command handler for URL reputation checks
     if user_input.lower().startswith("check_reputation"):
         parts = user_input.split()
         if len(parts) < 2:
@@ -362,41 +335,43 @@ while True:
             continue
         
         url_to_check = parts[1]
-        
-        # Perform the live OSINT check using the function
         vt_result = check_virustotal(url_to_check)
-        
-        # Log every check for auditing purposes, regardless of the outcome
         log_event(vt_result)
 
         if vt_result["status"] == "error":
             print(f"Sentinel: [ERROR] OSINT failed. Reason: {vt_result['message']}")
             continue
 
-        # Present the findings to the user
         malicious_count = vt_result['malicious_vendors']
         print(f"Sentinel: Analysis complete. VirusTotal reports {malicious_count} malicious detections for this URL.")
         
-        # --- HUMAN-IN-THE-LOOP ---
-        # If any threat is detected, ask the user for confirmation before acting.
         if malicious_count > 0:
             confirmation = input("Sentinel: Threat detected. Would you like me to block this URL? (yes/no) > ")
             if confirmation.lower() == 'yes':
                 try:
-                    # 1. Resolve the URL to an IP address
-                    ip_to_block = socket.gethostbyname(url_to_check)
+                    # --- CODE CHANGE STARTS HERE ---
+                    # 1. Parse the full URL to extract its components.
+                    parsed_url = urlparse(url_to_check)
+                    hostname_to_block = parsed_url.hostname
+
+                    if not hostname_to_block:
+                        raise ValueError("Could not extract a valid hostname from the URL.")
+
+                    # 2. Resolve the clean hostname/IP.
+                    ip_to_block = socket.gethostbyname(hostname_to_block)
+                    # --- CODE CHANGE ENDS HERE ---
                     
-                    # 2. Create an iptables rule to block the IP
+                    # 3. Create an iptables rule to block the IP
                     table = iptc.Table(iptc.Table.FILTER)
                     chain = iptc.Chain(table, "INPUT")
                     rule = iptc.Rule()
-                    rule.src = ip_to_block  # Block traffic FROM this source
+                    rule.src = ip_to_block
                     rule.target = iptc.Target(rule, "DROP")
                     chain.insert_rule(rule)
                     
-                    block_action = f"Successfully blocked IP {ip_to_block} for URL {url_to_check}."
+                    block_action = f"Successfully blocked IP {ip_to_block} for hostname '{hostname_to_block}'."
                     print(f"Sentinel: {block_action}")
-                    log_event({"action": "BLOCK_IP", "details": block_action}) # Log the successful block
+                    log_event({"action": "BLOCK_IP", "details": block_action})
 
                 except Exception as e:
                     error_message = f"Error during block action for {url_to_check}: {e}"
@@ -407,11 +382,8 @@ while True:
                 print("Sentinel: Understood. No action will be taken.")
                 log_event({"action": "USER_DECLINED_BLOCK", "url": url_to_check})
     else:
-        # For all other general queries, use the Gemini model
         try:
             response = model.generate_content(user_input)
             print(f"Sentinel: {response.text}")
         except Exception as e:
             print(f"Sentinel: [ERROR] An error occurred while processing your request: {e}")
-        except Exception as e:
-            print(f"Sentinel: An error occurred while processing your request: {e}")
