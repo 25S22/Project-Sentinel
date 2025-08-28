@@ -254,21 +254,27 @@ while True:
         malicious_count = vt_result['malicious_vendors']
         print(f"Sentinel: OSINT complete. VirusTotal reports {malicious_count} malicious detections.")
 
-        # --- STEP 2: UNIFIED GENERATIVE ANALYSIS ---
-        print(f"\nSentinel: I have no specific threat intelligence for {url_to_check}. Using generative analysis...")
+        # --- STEP 2: CONTEXT-AWARE GENERATIVE ANALYSIS ---
+        print(f"\nSentinel: Performing generative analysis...")
         
-        # Build the prompt dynamically based on the VirusTotal result
+        # --- REVISED PROMPTS FOR MORE RELEVANT OUTPUT ---
         if malicious_count > 0:
+            # Prompt for MALICIOUS sites: Focus on overview first, then threat details.
             analysis_prompt = f"""
-            From a cybersecurity perspective, analyze the domain '{url_to_check}'.
-            1. Provide a brief, neutral overview of the website's likely purpose.
-            2. A security scan flagged it with {malicious_count} malicious detections. Based on OSINT, explain the likely reasons it is considered a threat (e.g., phishing, malware, scam, etc.).
+            Analyze the website '{url_to_check}'.
+
+            1.  **Overview:** First, briefly describe the website's stated purpose. What kind of business or service does it claim to be?
+
+            2.  **Threat Analysis:** More importantly, this site was flagged with {malicious_count} malicious detections by security scanners. Provide a detailed analysis of the likely threats. Explain why it is considered malicious (e.g., phishing, malware, scam) and describe the potential risks to a user who visits it.
             """
         else:
+            # Prompt for CLEAN sites: Focus heavily on the business/content overview.
             analysis_prompt = f"""
-            From a cybersecurity perspective, analyze the domain '{url_to_check}'.
-            1. Provide a brief, neutral overview of the website's likely purpose and content.
-            2. Since no threats were detected by scanners, mention any general security considerations or notable positive reputation points if available.
+            Analyze the website '{url_to_check}'.
+
+            1.  **Detailed Overview:** Focus primarily on providing a detailed overview of the website. What is it about? What is the business or organization behind it? What specific products, services, or content does it offer?
+
+            2.  **Security Reputation:** Conclude with a brief mention of its security reputation, noting that it was not flagged by security scanners.
             """
         
         # Get and display the analysis
