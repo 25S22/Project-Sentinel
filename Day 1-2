@@ -158,33 +158,110 @@ Python
 import socket
 import iptc # This is from the python-iptables library
 
-# Inside your `if url_to_check in threat_intel:` block, replace the `print` statements with this:
-if url_to_check in threat_intel:
-    threat_data = threat_intel[url_to_check]
-    print(f"Sentinel: My analysis shows that {url_to_check} is {threat_data['status']}.")
-    print(f"Sentinel: Description: {threat_data['description']}")
-    print(f"Sentinel: SHA256: {threat_data['sha256']}")
-    
-    # Human-in-the-middle confirmation
-    confirmation = input("Sentinel: Would you like me to block this threat? (yes/no) > ")
-    if confirmation.lower() == 'yes':
-        try:
-            # A simple way to get the IP from the URL for this demo
-            ip_to_block = socket.gethostbyname(url_to_check)
-            
-            # Use iptc to add the firewall rule
-            table = iptc.Table(iptc.Table.FILTER)
-            chain = iptc.Chain(table, "INPUT")
-            
-            rule = iptc.Rule()
-            rule.src = ip_to_block
-            rule.target = iptc.Target(rule, "DROP")
-            chain.insert_rule(rule)
-            table.commit()
+import google.generativeai as genai
+import os
+import sys
+import socket  # Added for IP address resolution
+import iptc    # Added for iptables interaction
 
-            print(f"Sentinel: Success! The IP address {ip_to_block} has been added to the firewall drop list.")
-            # Future-proof: add a log entry here
-        except Exception as e:
-            print(f"Sentinel: An error occurred while trying to block the IP: {e}. Please ensure you have root permissions.")
+# --- Configuration ---
+# Configure the API key
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    raise ValueError("GEMINI_API_KEY not found. Please set the environment variable.")
+genai.configure(api_key=api_key)
+
+# The core conversational model
+model = genai.GenerativeModel('gemini-1.5-flash')
+
+# --- Hardcoded Knowledge Base ---
+# This is a simple dictionary for demonstration purposes.
+threat_intel = {
+    "malware-site.com": {
+        "status": "malicious",
+        "sha256": "5f6b89a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8",
+        "description": "Known malware distribution site."
+    },
+    "phishing-scam.net": {
+        "status": "phishing",
+        "sha256": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+        "description": "Known credential-stealing site."
+    },
+    "safe-website.com": {
+        "status": "safe",
+        "sha256": "n/a",
+        "description": "Verified legitimate website."
+    }
+}
+
+# --- Main Application Logic ---
+print("Sentinel: Greetings, I am your personal defensive agent. How can I assist you?")
+
+while True:
+    user_input = input("You > ")
+    if user_input.lower() in ['exit', 'quit']:
+        print("Sentinel: Shutting down. Goodbye!")
+        break
+
+    # Check for the specific "check_reputation" command
+    if user_input.lower().startswith("check_reputation"):
+        parts = user_input.split()
+        if len(parts) < 2:
+            print("Sentinel: Please provide a URL to check. Usage: check_reputation <URL>")
+            continue
+        
+        url_to_check = parts[1]
+        
+        if url_to_check in threat_intel:
+            threat_data = threat_intel[url_to_check]
+            print(f"Sentinel: My analysis shows that {url_to_check} is {threat_data['status']}.")
+            print(f"Sentinel: Description: {threat_data['description']}")
+            print(f"Sentinel: SHA256: {threat_data['sha256']}")
+
+            # --- MERGED CODE STARTS HERE ---
+            # This is the "Human-in-the-Loop" confirmation logic
+            
+            # Don't ask to block a safe site
+            if threat_data['status'] == 'safe':
+                continue
+
+            confirmation = input("Sentinel: Would you like me to block this threat? (yes/no) > ")
+            if confirmation.lower() == 'yes':
+                try:
+                    # Resolve the URL to an IP address
+                    ip_to_block = socket.gethostbyname(url_to_check)
+                    
+                    # Use iptc to add the firewall rule
+                    table = iptc.Table(iptc.Table.FILTER)
+                    chain = iptc.Chain(table, "INPUT")
+                    
+                    rule = iptc.Rule()
+                    rule.src = ip_to_block  # Block traffic coming FROM this source IP
+                    rule.target = iptc.Target(rule, "DROP")
+                    chain.insert_rule(rule)
+                    # The commit() method is deprecated, but we include it for older library versions.
+                    # table.commit() 
+                    
+                    print(f"Sentinel: Success! A firewall rule has been added to DROP traffic from {ip_to_block}.")
+                    
+                except socket.gaierror:
+                    print(f"Sentinel: Error: Could not resolve the hostname '{url_to_check}'. Cannot block.")
+                except Exception as e:
+                    print(f"Sentinel: An error occurred while trying to block the IP: {e}.")
+                    print("Sentinel: IMPORTANT - Please ensure you are running this script with root permissions (e.g., 'sudo python sentinel.py').")
+            else:
+                print("Sentinel: Understood. No action will be taken.")
+            # --- MERGED CODE ENDS HERE ---
+
+        else:
+            # If not in our hardcoded list, ask the AI for a general response
+            print(f"Sentinel: I have no specific threat intelligence for {url_to_check}. Using generative analysis...")
+            response = model.generate_content(f"From a cybersecurity perspective, what can you tell me about the domain '{url_to_check}'?")
+            print(f"Sentinel: {response.text}")
     else:
-        print("Sentinel: Understood. No action will be taken.")
+        # For all other questions, pass the query directly to the AI
+        try:
+            response = model.generate_content(user_input)
+            print(f"Sentinel: {response.text}")
+        except Exception as e:
+            print(f"Sentinel: An error occurred while processing your request: {e}")
