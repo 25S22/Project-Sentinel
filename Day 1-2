@@ -274,7 +274,7 @@ import iptc
 import vt
 import json
 from datetime import datetime
-from urllib.parse import urlparse  # <-- IMPORT THE URL PARSING LIBRARY
+from urllib.parse import urlparse
 
 # --- CONFIGURATION ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -349,25 +349,25 @@ while True:
             confirmation = input("Sentinel: Threat detected. Would you like me to block this URL? (yes/no) > ")
             if confirmation.lower() == 'yes':
                 try:
-                    # --- CODE CHANGE STARTS HERE ---
-                    # 1. Parse the full URL to extract its components.
                     parsed_url = urlparse(url_to_check)
                     hostname_to_block = parsed_url.hostname
 
                     if not hostname_to_block:
                         raise ValueError("Could not extract a valid hostname from the URL.")
 
-                    # 2. Resolve the clean hostname/IP.
                     ip_to_block = socket.gethostbyname(hostname_to_block)
-                    # --- CODE CHANGE ENDS HERE ---
                     
-                    # 3. Create an iptables rule to block the IP
                     table = iptc.Table(iptc.Table.FILTER)
                     chain = iptc.Chain(table, "INPUT")
                     rule = iptc.Rule()
                     rule.src = ip_to_block
                     rule.target = iptc.Target(rule, "DROP")
                     chain.insert_rule(rule)
+                    
+                    # --- FIX IS HERE ---
+                    # This line saves the new rule to the system's firewall.
+                    table.commit()
+                    # --- END FIX ---
                     
                     block_action = f"Successfully blocked IP {ip_to_block} for hostname '{hostname_to_block}'."
                     print(f"Sentinel: {block_action}")
