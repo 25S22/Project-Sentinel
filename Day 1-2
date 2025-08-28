@@ -291,18 +291,18 @@ genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # --- HELPER FUNCTIONS ---
+
 def log_event(data):
+    # (Logging function remains the same)
     try:
         with open(LOG_FILE_PATH, 'a') as log_file:
-            log_entry = {
-                "timestamp": datetime.now().isoformat(),
-                "event_data": data
-            }
+            log_entry = {"timestamp": datetime.now().isoformat(), "event_data": data}
             log_file.write(json.dumps(log_entry) + '\n')
     except Exception as e:
         print(f"Sentinel: [ERROR] Failed to write to log file: {e}")
 
 def check_virustotal(url):
+    # (VirusTotal function remains the same)
     print(f"Sentinel: Conducting OSINT on {url} via VirusTotal...")
     try:
         with vt.Client(VT_API_KEY) as client:
@@ -310,18 +310,30 @@ def check_virustotal(url):
             url_analysis = client.get_object(f"/urls/{url_id}")
             stats = url_analysis.last_analysis_stats
             malicious_votes = stats.get('malicious', 0)
-            harmless_votes = stats.get('harmless', 0)
-            result = {
-                "url": url, "status": "completed", "malicious_vendors": malicious_votes,
-                "harmless_vendors": harmless_votes, "full_report_id": url_analysis.id
-            }
+            result = { "url": url, "status": "completed", "malicious_vendors": malicious_votes }
             return result
     except Exception as e:
         return {"url": url, "status": "error", "message": str(e)}
 
+# --- NEW: SELF-VERIFICATION FUNCTION ---
+def verify_rule_exists(ip_to_check):
+    """Reads the live firewall rules to confirm if a block for the IP exists."""
+    try:
+        table = iptc.Table(iptc.Table.FILTER)
+        table.refresh() # Ensure we have the latest rules from the kernel
+        chain = iptc.Chain(table, "INPUT")
+        for rule in chain.rules:
+            # Check if the rule's source IP matches the one we tried to block
+            # Note: rule.src is formatted as "ip/netmask", so we check if our IP is in that string.
+            if ip_to_check in rule.src:
+                return True # Rule found!
+        return False # Rule not found
+    except Exception as e:
+        print(f"Sentinel: [VERIFICATION ERROR] Could not read iptables rules: {e}")
+        return False
+
 # --- MAIN APPLICATION LOGIC ---
 print("Sentinel: Greetings, I am your personal defensive agent. How can I assist you?")
-
 while True:
     user_input = input("You > ")
     if user_input.lower() in ['exit', 'quit']:
@@ -351,39 +363,47 @@ while True:
                 try:
                     parsed_url = urlparse(url_to_check)
                     hostname_to_block = parsed_url.hostname
-
                     if not hostname_to_block:
                         raise ValueError("Could not extract a valid hostname from the URL.")
-
                     ip_to_block = socket.gethostbyname(hostname_to_block)
                     
+                    print(f"Sentinel: Attempting to apply firewall block for IP: {ip_to_block}...")
+                    
+                    # --- REVISED BLOCKING LOGIC ---
                     table = iptc.Table(iptc.Table.FILTER)
+                    # 1. Enable autocommit to apply changes immediately.
+                    table.autocommit = True
+                    
                     chain = iptc.Chain(table, "INPUT")
                     rule = iptc.Rule()
                     rule.src = ip_to_block
                     rule.target = iptc.Target(rule, "DROP")
                     chain.insert_rule(rule)
-                    
-                    # --- FIX IS HERE ---
-                    # This line saves the new rule to the system's firewall.
-                    table.commit()
-                    # --- END FIX ---
-                    
-                    block_action = f"Successfully blocked IP {ip_to_block} for hostname '{hostname_to_block}'."
-                    print(f"Sentinel: {block_action}")
-                    log_event({"action": "BLOCK_IP", "details": block_action})
+                    # No table.commit() needed when autocommit is True
+                    # --- END REVISED LOGIC ---
+
+                    # --- 2. SELF-VERIFICATION STEP ---
+                    print("Sentinel: Verifying block implementation...")
+                    if verify_rule_exists(ip_to_block):
+                        success_message = f"VERIFICATION SUCCESS: Firewall rule for {ip_to_block} is active."
+                        print(f"Sentinel: {success_message}")
+                        log_event({"action": "BLOCK_IP_VERIFIED", "details": success_message})
+                    else:
+                        failure_message = f"VERIFICATION FAILED: Rule for {ip_to_block} was NOT added. Check system logs or permissions."
+                        print(f"Sentinel: {failure_message}")
+                        log_event({"action": "BLOCK_IP_FAILED", "details": failure_message})
 
                 except Exception as e:
-                    error_message = f"Error during block action for {url_to_check}: {e}"
+                    error_message = f"An unexpected error occurred during the block action: {e}"
                     print(f"Sentinel: [ERROR] {error_message}")
-                    print("Sentinel: IMPORTANT - Ensure you are running this script with root permissions (sudo).")
-                    log_event({"action": "BLOCK_IP_FAILED", "details": error_message})
+                    log_event({"action": "BLOCK_IP_EXCEPTION", "details": error_message})
             else:
                 print("Sentinel: Understood. No action will be taken.")
                 log_event({"action": "USER_DECLINED_BLOCK", "url": url_to_check})
     else:
+        # General AI queries remain the same
         try:
             response = model.generate_content(user_input)
             print(f"Sentinel: {response.text}")
         except Exception as e:
-            print(f"Sentinel: [ERROR] An error occurred while processing your request: {e}")
+            print(f"Sentinel: [ERROR] An error occurred: {e}")
