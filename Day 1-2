@@ -293,7 +293,7 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 # --- HELPER FUNCTIONS ---
 
 def log_event(data):
-    # (Logging function remains the same)
+    """Appends a JSON object with a timestamp to the audit log file."""
     try:
         with open(LOG_FILE_PATH, 'a') as log_file:
             log_entry = {"timestamp": datetime.now().isoformat(), "event_data": data}
@@ -302,38 +302,44 @@ def log_event(data):
         print(f"Sentinel: [ERROR] Failed to write to log file: {e}")
 
 def check_virustotal(url):
-    # (VirusTotal function remains the same)
-    print(f"Sentinel: Conducting OSINT on {url} via VirusTotal...")
+    """Checks the reputation of a URL using the VirusTotal API."""
+    print(f"\nSentinel: [1/3] Conducting OSINT on {url} via VirusTotal...")
     try:
         with vt.Client(VT_API_KEY) as client:
             url_id = vt.url_id(url)
             url_analysis = client.get_object(f"/urls/{url_id}")
             stats = url_analysis.last_analysis_stats
             malicious_votes = stats.get('malicious', 0)
-            result = { "url": url, "status": "completed", "malicious_vendors": malicious_votes }
+            result = {"url": url, "status": "completed", "malicious_vendors": malicious_votes}
             return result
     except Exception as e:
         return {"url": url, "status": "error", "message": str(e)}
 
-# --- NEW: SELF-VERIFICATION FUNCTION ---
+def get_gemini_analysis(prompt):
+    """Sends a prompt to the Gemini API and returns the text response."""
+    try:
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"[Gemini Error: Could not process request. Reason: {e}]"
+
 def verify_rule_exists(ip_to_check):
     """Reads the live firewall rules to confirm if a block for the IP exists."""
     try:
         table = iptc.Table(iptc.Table.FILTER)
-        table.refresh() # Ensure we have the latest rules from the kernel
+        table.refresh()
         chain = iptc.Chain(table, "INPUT")
         for rule in chain.rules:
-            # Check if the rule's source IP matches the one we tried to block
-            # Note: rule.src is formatted as "ip/netmask", so we check if our IP is in that string.
             if ip_to_check in rule.src:
-                return True # Rule found!
-        return False # Rule not found
+                return True
+        return False
     except Exception as e:
         print(f"Sentinel: [VERIFICATION ERROR] Could not read iptables rules: {e}")
         return False
 
 # --- MAIN APPLICATION LOGIC ---
 print("Sentinel: Greetings, I am your personal defensive agent. How can I assist you?")
+
 while True:
     user_input = input("You > ")
     if user_input.lower() in ['exit', 'quit']:
@@ -347,18 +353,37 @@ while True:
             continue
         
         url_to_check = parts[1]
+        
+        # --- STEP 1: VIRUSTOTAL CHECK ---
         vt_result = check_virustotal(url_to_check)
         log_event(vt_result)
 
         if vt_result["status"] == "error":
             print(f"Sentinel: [ERROR] OSINT failed. Reason: {vt_result['message']}")
             continue
-
+            
         malicious_count = vt_result['malicious_vendors']
-        print(f"Sentinel: Analysis complete. VirusTotal reports {malicious_count} malicious detections for this URL.")
+        print(f"Sentinel: Analysis complete. VirusTotal reports {malicious_count} malicious detections.")
+
+        # --- STEP 2: GEMINI GENERAL OVERVIEW (FOR EVERY URL) ---
+        print(f"\nSentinel: [2/3] Requesting general overview from Gemini...")
+        overview_prompt = f"Provide a brief, neutral overview of the website or domain: '{url_to_check}'. Describe its likely purpose and the type of content it hosts, based on your training data."
+        overview_text = get_gemini_analysis(overview_prompt)
+        print("--- Gemini Website Overview ---")
+        print(overview_text)
+        print("------------------------------")
         
+        # --- STEP 3: GEMINI THREAT CONTEXT (ONLY IF MALICIOUS) ---
         if malicious_count > 0:
-            confirmation = input("Sentinel: Threat detected. Would you like me to block this URL? (yes/no) > ")
+            print(f"\nSentinel: [3/3] Requesting threat context from Gemini...")
+            threat_prompt = f"A security scan flagged the URL '{url_to_check}' as malicious with {malicious_count} detections. Based on open-source intelligence from your training data, what are the likely reasons this URL is considered a threat? (e.g., phishing, malware distribution, scam, etc.)"
+            threat_text = get_gemini_analysis(threat_prompt)
+            print("--- Gemini Threat Analysis ---")
+            print(threat_text)
+            print("-----------------------------")
+            
+            # --- HUMAN-IN-THE-LOOP BLOCKING ---
+            confirmation = input("\nSentinel: Threat detected. Would you like me to block this URL? (yes/no) > ")
             if confirmation.lower() == 'yes':
                 try:
                     parsed_url = urlparse(url_to_check)
@@ -368,28 +393,21 @@ while True:
                     ip_to_block = socket.gethostbyname(hostname_to_block)
                     
                     print(f"Sentinel: Attempting to apply firewall block for IP: {ip_to_block}...")
-                    
-                    # --- REVISED BLOCKING LOGIC ---
                     table = iptc.Table(iptc.Table.FILTER)
-                    # 1. Enable autocommit to apply changes immediately.
                     table.autocommit = True
-                    
                     chain = iptc.Chain(table, "INPUT")
                     rule = iptc.Rule()
                     rule.src = ip_to_block
                     rule.target = iptc.Target(rule, "DROP")
                     chain.insert_rule(rule)
-                    # No table.commit() needed when autocommit is True
-                    # --- END REVISED LOGIC ---
 
-                    # --- 2. SELF-VERIFICATION STEP ---
                     print("Sentinel: Verifying block implementation...")
                     if verify_rule_exists(ip_to_block):
                         success_message = f"VERIFICATION SUCCESS: Firewall rule for {ip_to_block} is active."
                         print(f"Sentinel: {success_message}")
                         log_event({"action": "BLOCK_IP_VERIFIED", "details": success_message})
                     else:
-                        failure_message = f"VERIFICATION FAILED: Rule for {ip_to_block} was NOT added. Check system logs or permissions."
+                        failure_message = f"VERIFICATION FAILED: Rule for {ip_to_block} was NOT added."
                         print(f"Sentinel: {failure_message}")
                         log_event({"action": "BLOCK_IP_FAILED", "details": failure_message})
 
@@ -401,9 +419,7 @@ while True:
                 print("Sentinel: Understood. No action will be taken.")
                 log_event({"action": "USER_DECLINED_BLOCK", "url": url_to_check})
     else:
-        # General AI queries remain the same
-        try:
-            response = model.generate_content(user_input)
-            print(f"Sentinel: {response.text}")
-        except Exception as e:
-            print(f"Sentinel: [ERROR] An error occurred: {e}")
+        # For all other general queries, use the Gemini model
+        print("Sentinel: Processing general query...")
+        response_text = get_gemini_analysis(user_input)
+        print(f"Sentinel: {response_text}")
