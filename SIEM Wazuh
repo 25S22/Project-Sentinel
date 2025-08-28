@@ -6,7 +6,7 @@ We will use Wazuh, which provides a powerful dashboard to see the alerts from Su
 Run these commands on your Kali Purple (Defender) VM. This single script installs the Wazuh server and the web dashboard.
 
 Bash
-
+/UroGQw8PFC8Z3vLN/gdsUvtZNG/TmJd85ARgBobYHLtU58Q5RWZRcUzK9V26R2f
 # Download and run the all-in-one installation script
 curl -sO https://packages.wazuh.com/4.7/wazuh-install.sh
 sudo bash ./wazuh-install.sh -a
