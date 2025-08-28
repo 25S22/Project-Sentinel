@@ -154,117 +154,6 @@ Now, modify your sentinel.py script to include the "human-in-the-middle" logic. 
 
 Python
 
-# Add these imports at the top of your sentinel.py script
-import socket
-import iptc # This is from the python-iptables library
-
-import google.generativeai as genai
-import os
-import sys
-import socket  # Added for IP address resolution
-import iptc    # Added for iptables interaction
-
-# --- Configuration ---
-# Configure the API key
-api_key = os.getenv("GEMINI_API_KEY")
-if not api_key:
-    raise ValueError("GEMINI_API_KEY not found. Please set the environment variable.")
-genai.configure(api_key=api_key)
-
-# The core conversational model
-model = genai.GenerativeModel('gemini-1.5-flash')
-
-# --- Hardcoded Knowledge Base ---
-# This is a simple dictionary for demonstration purposes.
-threat_intel = {
-    "malware-site.com": {
-        "status": "malicious",
-        "sha256": "5f6b89a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8",
-        "description": "Known malware distribution site."
-    },
-    "phishing-scam.net": {
-        "status": "phishing",
-        "sha256": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
-        "description": "Known credential-stealing site."
-    },
-    "safe-website.com": {
-        "status": "safe",
-        "sha256": "n/a",
-        "description": "Verified legitimate website."
-    }
-}
-
-# --- Main Application Logic ---
-print("Sentinel: Greetings, I am your personal defensive agent. How can I assist you?")
-
-while True:
-    user_input = input("You > ")
-    if user_input.lower() in ['exit', 'quit']:
-        print("Sentinel: Shutting down. Goodbye!")
-        break
-
-    # Check for the specific "check_reputation" command
-    if user_input.lower().startswith("check_reputation"):
-        parts = user_input.split()
-        if len(parts) < 2:
-            print("Sentinel: Please provide a URL to check. Usage: check_reputation <URL>")
-            continue
-        
-        url_to_check = parts[1]
-        
-        if url_to_check in threat_intel:
-            threat_data = threat_intel[url_to_check]
-            print(f"Sentinel: My analysis shows that {url_to_check} is {threat_data['status']}.")
-            print(f"Sentinel: Description: {threat_data['description']}")
-            print(f"Sentinel: SHA256: {threat_data['sha256']}")
-
-            # --- MERGED CODE STARTS HERE ---
-            # This is the "Human-in-the-Loop" confirmation logic
-            
-            # Don't ask to block a safe site
-            if threat_data['status'] == 'safe':
-                continue
-
-            confirmation = input("Sentinel: Would you like me to block this threat? (yes/no) > ")
-            if confirmation.lower() == 'yes':
-                try:
-                    # Resolve the URL to an IP address
-                    ip_to_block = socket.gethostbyname(url_to_check)
-                    
-                    # Use iptc to add the firewall rule
-                    table = iptc.Table(iptc.Table.FILTER)
-                    chain = iptc.Chain(table, "INPUT")
-                    
-                    rule = iptc.Rule()
-                    rule.src = ip_to_block  # Block traffic coming FROM this source IP
-                    rule.target = iptc.Target(rule, "DROP")
-                    chain.insert_rule(rule)
-                    # The commit() method is deprecated, but we include it for older library versions.
-                    # table.commit() 
-                    
-                    print(f"Sentinel: Success! A firewall rule has been added to DROP traffic from {ip_to_block}.")
-                    
-                except socket.gaierror:
-                    print(f"Sentinel: Error: Could not resolve the hostname '{url_to_check}'. Cannot block.")
-                except Exception as e:
-                    print(f"Sentinel: An error occurred while trying to block the IP: {e}.")
-                    print("Sentinel: IMPORTANT - Please ensure you are running this script with root permissions (e.g., 'sudo python sentinel.py').")
-            else:
-                print("Sentinel: Understood. No action will be taken.")
-            # --- MERGED CODE ENDS HERE ---
-
-        else:
-            # If not in our hardcoded list, ask the AI for a general response
-            print(f"Sentinel: I have no specific threat intelligence for {url_to_check}. Using generative analysis...")
-            response = model.generate_content(f"From a cybersecurity perspective, what can you tell me about the domain '{url_to_check}'?")
-            print(f"Sentinel: {response.text}")
-    else:
-F3Yu2896HRbnmlj+gonIfPitGNffysgFJ0jKPFyP4uh8vzC5lG+EdJIpqij1/s0lJAnFReR7aVZNtlGD6zxP6vUbJAwYJ5dNr++gNH6dsE0=
-        # For all other questions, pass the query directly to the AI
-        try:
-            response = model.generate_content(user_input)
-            print(f"Sentinel: {response.text}")
-
 #With added api of virus total! import google.generativeai as genai
 import google.generativeai as genai
 import os
@@ -303,7 +192,7 @@ def log_event(data):
 
 def check_virustotal(url):
     """Checks the reputation of a URL using the VirusTotal API."""
-    print(f"\nSentinel: [1/3] Conducting OSINT on {url} via VirusTotal...")
+    print(f"\nSentinel: Conducting OSINT on {url} via VirusTotal...")
     try:
         with vt.Client(VT_API_KEY) as client:
             url_id = vt.url_id(url)
@@ -315,13 +204,13 @@ def check_virustotal(url):
     except Exception as e:
         return {"url": url, "status": "error", "message": str(e)}
 
-def get_gemini_analysis(prompt):
-    """Sends a prompt to the Gemini API and returns the text response."""
+def get_generative_analysis(prompt):
+    """Sends a prompt to the AI model and returns the text response."""
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"[Gemini Error: Could not process request. Reason: {e}]"
+        return f"[Analysis Error: Could not process request. Reason: {e}]"
 
 def verify_rule_exists(ip_to_check):
     """Reads the live firewall rules to confirm if a block for the IP exists."""
@@ -363,29 +252,37 @@ while True:
             continue
             
         malicious_count = vt_result['malicious_vendors']
-        print(f"Sentinel: Analysis complete. VirusTotal reports {malicious_count} malicious detections.")
+        print(f"Sentinel: OSINT complete. VirusTotal reports {malicious_count} malicious detections.")
 
-        # --- STEP 2: GEMINI GENERAL OVERVIEW (FOR EVERY URL) ---
-        print(f"\nSentinel: [2/3] Requesting general overview from Gemini...")
-        overview_prompt = f"Provide a brief, neutral overview of the website or domain: '{url_to_check}'. Describe its likely purpose and the type of content it hosts, based on your training data."
-        overview_text = get_gemini_analysis(overview_prompt)
-        print("--- Gemini Website Overview ---")
-        print(overview_text)
-        print("------------------------------")
+        # --- STEP 2: UNIFIED GENERATIVE ANALYSIS ---
+        print(f"\nSentinel: I have no specific threat intelligence for {url_to_check}. Using generative analysis...")
         
-        # --- STEP 3: GEMINI THREAT CONTEXT (ONLY IF MALICIOUS) ---
+        # Build the prompt dynamically based on the VirusTotal result
         if malicious_count > 0:
-            print(f"\nSentinel: [3/3] Requesting threat context from Gemini...")
-            threat_prompt = f"A security scan flagged the URL '{url_to_check}' as malicious with {malicious_count} detections. Based on open-source intelligence from your training data, what are the likely reasons this URL is considered a threat? (e.g., phishing, malware distribution, scam, etc.)"
-            threat_text = get_gemini_analysis(threat_prompt)
-            print("--- Gemini Threat Analysis ---")
-            print(threat_text)
-            print("-----------------------------")
-            
-            # --- HUMAN-IN-THE-LOOP BLOCKING ---
+            analysis_prompt = f"""
+            From a cybersecurity perspective, analyze the domain '{url_to_check}'.
+            1. Provide a brief, neutral overview of the website's likely purpose.
+            2. A security scan flagged it with {malicious_count} malicious detections. Based on OSINT, explain the likely reasons it is considered a threat (e.g., phishing, malware, scam, etc.).
+            """
+        else:
+            analysis_prompt = f"""
+            From a cybersecurity perspective, analyze the domain '{url_to_check}'.
+            1. Provide a brief, neutral overview of the website's likely purpose and content.
+            2. Since no threats were detected by scanners, mention any general security considerations or notable positive reputation points if available.
+            """
+        
+        # Get and display the analysis
+        analysis_text = get_generative_analysis(analysis_prompt)
+        print("--- Generative Analysis ---")
+        print(analysis_text)
+        print("---------------------------")
+        
+        # --- STEP 3: HUMAN-IN-THE-LOOP BLOCKING (IF MALICIOUS) ---
+        if malicious_count > 0:
             confirmation = input("\nSentinel: Threat detected. Would you like me to block this URL? (yes/no) > ")
             if confirmation.lower() == 'yes':
                 try:
+                    # (Blocking and verification logic remains the same)
                     parsed_url = urlparse(url_to_check)
                     hostname_to_block = parsed_url.hostname
                     if not hostname_to_block:
@@ -419,7 +316,7 @@ while True:
                 print("Sentinel: Understood. No action will be taken.")
                 log_event({"action": "USER_DECLINED_BLOCK", "url": url_to_check})
     else:
-        # For all other general queries, use the Gemini model
+        # For all other general queries
         print("Sentinel: Processing general query...")
-        response_text = get_gemini_analysis(user_input)
+        response_text = get_generative_analysis(user_input)
         print(f"Sentinel: {response_text}")
