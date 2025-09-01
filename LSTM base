@@ -1,0 +1,89 @@
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, RepeatVector
+
+class LSTMAutoencoder:
+    """
+    A class to represent the LSTM Autoencoder model for anomaly detection.
+    This class will handle model creation, training, and prediction.
+    """
+    def __init__(self):
+        self.model = None
+        self.history = None
+        # We will define these parameters later during development
+        self.timesteps = 10  # Example: Look at sequences of 10 events
+        self.n_features = 1 # Example: Each event has 1 feature
+    
+    def build_model(self):
+        """
+        Defines the architecture of the LSTM Autoencoder neural network.
+        """
+        # --- Encoder ---
+        inputs = Input(shape=(self.timesteps, self.n_features))
+        # The LSTM layer learns the temporal patterns in the sequence
+        encoded = LSTM(128, activation='relu')(inputs)
+        
+        # --- Decoder ---
+        # The RepeatVector repeats the learned pattern to reconstruct the original sequence
+        decoded = RepeatVector(self.timesteps)(encoded)
+        decoded = LSTM(128, activation='relu', return_sequences=True)(decoded)
+        
+        # The output layer reconstructs the input sequence
+        output = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(self.n_features))(decoded)
+        
+        self.model = Model(inputs, output)
+        self.model.compile(optimizer='adam', loss='mae')
+        
+        print("LSTM Autoencoder model built successfully.")
+        self.model.summary()
+
+    def train(self, training_data):
+        """
+        Trains the autoencoder on a dataset of 'normal' activity.
+        """
+        if self.model is None:
+            print("Model has not been built yet. Call build_model() first.")
+            return
+
+        print("Starting model training...")
+        # Note: The training_data will need to be pre-processed into the correct shape
+        # For now, this is a placeholder for the training logic.
+        # self.history = self.model.fit(
+        #     training_data, training_data,
+        #     epochs=50,
+        #     batch_size=32,
+        #     validation_split=0.1,
+        #     shuffle=True
+        # )
+        print("Model training placeholder complete.")
+
+    def save_model(self, path="lstm_autoencoder.h5"):
+        """Saves the trained model to a file."""
+        if self.model:
+            self.model.save(path)
+            print(f"Model saved to {path}")
+
+    def load_model(self, path="lstm_autoencoder.h5"):
+        """Loads a pre-trained model from a file."""
+        self.model = tf.keras.models.load_model(path)
+        print(f"Model loaded from {path}")
+
+# --- Example of how we will use this class later ---
+if __name__ == '__main__':
+    # This is a placeholder for our future development and testing
+    
+    # 1. We will load and pre-process our log data here
+    # dummy_data = np.random.rand(1000, 10, 1) # (samples, timesteps, features)
+    
+    # 2. We will create an instance of our model
+    autoencoder = LSTMAutoencoder()
+    
+    # 3. Build the model architecture
+    autoencoder.build_model()
+    
+    # 4. Train the model on our collected 'normal' data
+    # autoencoder.train(dummy_data)
+    
+    # 5. Save the trained model for Sentinel to use
+    # autoencoder.save_model()
