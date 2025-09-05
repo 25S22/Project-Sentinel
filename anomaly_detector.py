@@ -2,9 +2,10 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, LSTM, RepeatVector
+from tensorflow.keras.layers import Input, LSTM, RepeatVector, TimeDistributed, Dense
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_extraction import FeatureHasher
+import joblib
 
 class LSTMAutoencoder:
     """
@@ -26,13 +27,11 @@ class LSTMAutoencoder:
         # Ensure the column is treated as strings
         process_names = df['process_name'].astype(str).to_list()
         
-        # --- FIX IS HERE ---
         # The FeatureHasher expects a list of lists. We wrap each process name in its own list.
         formatted_for_hashing = [[name] for name in process_names]
         
         # Use the correctly formatted list for hashing
         hashed_features = self.hasher.fit_transform(formatted_for_hashing).toarray()
-        # --- END FIX ---
         
         # Scale the features
         scaled_features = self.scaler.fit_transform(hashed_features)
@@ -52,7 +51,7 @@ class LSTMAutoencoder:
         encoded = LSTM(128, activation='relu')(inputs)
         decoded = RepeatVector(self.timesteps)(encoded)
         decoded = LSTM(128, activation='relu', return_sequences=True)(decoded)
-        output = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(self.n_features))(decoded)
+        output = TimeDistributed(Dense(self.n_features))(decoded)
         
         self.model = Model(inputs, output)
         self.model.compile(optimizer='adam', loss='mae')
@@ -70,10 +69,13 @@ class LSTMAutoencoder:
         print("\nStarting model training... This may take a while.")
         self.history = self.model.fit(
             sequences, sequences,
-            epochs=20,
+            epochs=30, # Increased epochs for potentially better learning
             batch_size=32,
             validation_split=0.1,
-            shuffle=False
+            shuffle=False,
+            callbacks=[
+                tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, mode='min', restore_best_weights=True)
+            ]
         )
         print("Model training complete.")
 
@@ -85,15 +87,24 @@ class LSTMAutoencoder:
         reconstructions = self.model.predict(sequences)
         train_mae_loss = np.mean(np.abs(reconstructions - sequences), axis=(1, 2))
         
-        threshold = np.max(train_mae_loss) * 1.1
+        # Using a more robust statistical method for the threshold
+        threshold = np.mean(train_mae_loss) + 3 * np.std(train_mae_loss)
         print(f"Reconstruction error threshold set to: {threshold}")
         return threshold
 
-    def save_model(self, path="lstm_autoencoder.h5"):
-        """Saves the trained model to a file."""
+    def save_all(self, model_path="lstm_autoencoder.keras", scaler_path="scaler.gz", hasher_path="hasher.gz", threshold_path="threshold.txt", threshold=0.0):
+        """Saves the trained model, preprocessors, and threshold to files."""
         if self.model:
-            self.model.save(path)
-            print(f"Model saved to {path}")
+            self.model.save(model_path)
+            print(f"Model saved to {model_path}")
+        joblib.dump(self.scaler, scaler_path)
+        print(f"Scaler saved to {scaler_path}")
+        joblib.dump(self.hasher, hasher_path)
+        print(f"Hasher saved to {hasher_path}")
+        with open(threshold_path, 'w') as f:
+            f.write(str(threshold))
+        print(f"Threshold saved to {threshold_path}")
+
 
 # --- Main execution block to run the training process ---
 if __name__ == '__main__':
@@ -106,10 +117,17 @@ if __name__ == '__main__':
 
     autoencoder = LSTMAutoencoder()
     training_sequences = autoencoder.preprocess_data(dataframe)
+    
+    if training_sequences.size == 0:
+        print("[ERROR] No training sequences were created. The input data might be too short for the current timesteps setting.")
+        exit()
+        
     autoencoder.build_model()
     autoencoder.train(training_sequences)
     threshold = autoencoder.find_anomaly_threshold(training_sequences)
-    autoencoder.save_model()
+    
+    # Save everything needed for inference
+    autoencoder.save_all(threshold=threshold)
     
     print("\n--- Training Process Complete ---")
-    print("A trained model 'lstm_autoencoder.h5' and its settings are now ready for integration.")
+    print("A trained model 'lstm_autoencoder.keras' and its settings are now ready for integration.")
