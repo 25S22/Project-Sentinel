@@ -12,7 +12,6 @@ TIMESTEPS = 10 # How many snapshots form a single sequence
 
 # Define which columns are which type for preprocessing
 CATEGORICAL_COLS = ['process_name', 'username']
-# 'net_connections' has been removed
 NUMERICAL_COLS = ['cpu_percent', 'memory_percent', 'num_threads'] 
 # The final number of features will be the sum of hashed features and numerical features
 N_HASH_FEATURES = 5 
@@ -63,9 +62,15 @@ class AdvancedLSTMAutoencoder:
         Defines the architecture of the LSTM Autoencoder neural network.
         """
         inputs = Input(shape=(TIMESTEPS, N_FEATURES))
+        # Encoder
         encoded = LSTM(128, activation='relu', return_sequences=False)(inputs)
         encoded = RepeatVector(TIMESTEPS)(encoded)
-        decoded = LSTM(128, activation='relu', return_sequences=True)(decoded)
+        
+        # --- FIX IS HERE ---
+        # Decoder now correctly takes the 'encoded' variable as input
+        decoded = LSTM(128, activation='relu', return_sequences=True)(encoded)
+        # --- END FIX ---
+
         output = TimeDistributed(Dense(N_FEATURES))(decoded)
         
         self.model = Model(inputs, output)
