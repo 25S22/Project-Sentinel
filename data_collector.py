@@ -14,8 +14,8 @@ FIELDNAMES = [
     'username', 
     'cpu_percent', 
     'memory_percent', 
-    'num_threads',
-    'net_connections' # Number of established network connections
+    'num_threads'
+    # 'net_connections' has been removed
 ]
 
 def get_system_snapshot():
@@ -24,16 +24,11 @@ def get_system_snapshot():
     the current state of a running process.
     """
     processes_snapshot = []
-    for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'num_threads', 'connections']):
+    # 'connections' has been removed from the list of attributes to fetch
+    for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'num_threads']):
         try:
             # Get process details
             pinfo = proc.info
-            
-            # Count only established network connections for this process
-            net_conns = 0
-            if pinfo['connections'] is not None:
-                net_conns = len([c for c in pinfo['connections'] if c.status == psutil.CONN_ESTABLISHED])
-
             processes_snapshot.append({
                 'timestamp': datetime.now().isoformat(),
                 'pid': pinfo['pid'],
@@ -41,8 +36,7 @@ def get_system_snapshot():
                 'username': pinfo['username'],
                 'cpu_percent': pinfo['cpu_percent'],
                 'memory_percent': round(pinfo['memory_percent'], 2),
-                'num_threads': pinfo['num_threads'],
-                'net_connections': net_conns
+                'num_threads': pinfo['num_threads']
             })
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             # Ignore processes that have terminated or are inaccessible
@@ -68,8 +62,6 @@ def start_collection():
                 snapshot = get_system_snapshot()
                 if snapshot:
                     writer.writerows(snapshot)
-                    # Optional: uncomment to see live data being collected
-                    # print(f"Logged {len(snapshot)} processes at {datetime.now().strftime('%H:%M:%S')}")
                 
                 time.sleep(COLLECTION_INTERVAL_SECONDS)
                 
