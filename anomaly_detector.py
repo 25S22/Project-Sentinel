@@ -12,7 +12,8 @@ TIMESTEPS = 10 # How many snapshots form a single sequence
 
 # Define which columns are which type for preprocessing
 CATEGORICAL_COLS = ['process_name', 'username']
-NUMERICAL_COLS = ['cpu_percent', 'memory_percent', 'num_threads', 'net_connections']
+# 'net_connections' has been removed
+NUMERICAL_COLS = ['cpu_percent', 'memory_percent', 'num_threads'] 
 # The final number of features will be the sum of hashed features and numerical features
 N_HASH_FEATURES = 5 
 N_FEATURES = N_HASH_FEATURES + len(NUMERICAL_COLS)
@@ -33,7 +34,6 @@ class AdvancedLSTMAutoencoder:
         print("Preprocessing enhanced data...")
 
         # 1. Handle Categorical Features with Hashing
-        # Convert all categorical columns to string and create a list of records
         categorical_data = df[CATEGORICAL_COLS].astype(str).to_dict('records')
         hashed_features = self.hasher.fit_transform(categorical_data).toarray()
         print(f"Hashed categorical features into shape: {hashed_features.shape}")
@@ -63,10 +63,8 @@ class AdvancedLSTMAutoencoder:
         Defines the architecture of the LSTM Autoencoder neural network.
         """
         inputs = Input(shape=(TIMESTEPS, N_FEATURES))
-        # Encoder
         encoded = LSTM(128, activation='relu', return_sequences=False)(inputs)
         encoded = RepeatVector(TIMESTEPS)(encoded)
-        # Decoder
         decoded = LSTM(128, activation='relu', return_sequences=True)(decoded)
         output = TimeDistributed(Dense(N_FEATURES))(decoded)
         
@@ -98,10 +96,7 @@ class AdvancedLSTMAutoencoder:
         """
         print("\nFinding anomaly threshold...")
         reconstructions = self.model.predict(sequences)
-        # Calculate loss for each sequence
         train_mae_loss = np.mean(np.abs(reconstructions - sequences), axis=(1, 2))
-        
-        # Set threshold to mean + 3 standard deviations (a common statistical approach)
         threshold = np.mean(train_mae_loss) + 3 * np.std(train_mae_loss)
         print(f"Reconstruction error threshold set to: {threshold}")
         return threshold
@@ -118,9 +113,7 @@ class AdvancedLSTMAutoencoder:
 # --- Main execution block ---
 if __name__ == '__main__':
     try:
-        # Load the raw data collected by the new data_collector.py
         dataframe = pd.read_csv('baseline_data.csv')
-        # Drop columns that are not features for the model
         dataframe = dataframe.drop(columns=['timestamp', 'pid'])
         print(f"Loaded {len(dataframe)} records from baseline_data.csv")
     except FileNotFoundError:
