@@ -23,9 +23,16 @@ class LSTMAutoencoder:
         Converts the raw log data from the CSV into numerical sequences for the LSTM.
         """
         print("Preprocessing data...")
-        # Use Feature Hashing to convert process names into numerical vectors
+        # Ensure the column is treated as strings
         process_names = df['process_name'].astype(str).to_list()
-        hashed_features = self.hasher.fit_transform(process_names).toarray()
+        
+        # --- FIX IS HERE ---
+        # The FeatureHasher expects a list of lists. We wrap each process name in its own list.
+        formatted_for_hashing = [[name] for name in process_names]
+        
+        # Use the correctly formatted list for hashing
+        hashed_features = self.hasher.fit_transform(formatted_for_hashing).toarray()
+        # --- END FIX ---
         
         # Scale the features
         scaled_features = self.scaler.fit_transform(hashed_features)
@@ -63,10 +70,10 @@ class LSTMAutoencoder:
         print("\nStarting model training... This may take a while.")
         self.history = self.model.fit(
             sequences, sequences,
-            epochs=20, # 20 epochs is a good starting point
+            epochs=20,
             batch_size=32,
             validation_split=0.1,
-            shuffle=False # For time-series, it's often better not to shuffle
+            shuffle=False
         )
         print("Model training complete.")
 
@@ -78,7 +85,6 @@ class LSTMAutoencoder:
         reconstructions = self.model.predict(sequences)
         train_mae_loss = np.mean(np.abs(reconstructions - sequences), axis=(1, 2))
         
-        # A common approach is to set the threshold slightly above the max error
         threshold = np.max(train_mae_loss) * 1.1
         print(f"Reconstruction error threshold set to: {threshold}")
         return threshold
@@ -91,7 +97,6 @@ class LSTMAutoencoder:
 
 # --- Main execution block to run the training process ---
 if __name__ == '__main__':
-    # 1. Load the collected baseline data
     try:
         dataframe = pd.read_csv('baseline_data.csv')
         print(f"Loaded {len(dataframe)} log entries from baseline_data.csv")
@@ -99,22 +104,11 @@ if __name__ == '__main__':
         print("[ERROR] baseline_data.csv not found. Please run data_collector.py first.")
         exit()
 
-    # 2. Create an instance of our model
     autoencoder = LSTMAutoencoder()
-    
-    # 3. Preprocess the data into sequences
     training_sequences = autoencoder.preprocess_data(dataframe)
-    
-    # 4. Build the model architecture
     autoencoder.build_model()
-    
-    # 5. Train the model on our collected 'normal' data
     autoencoder.train(training_sequences)
-    
-    # 6. Determine the threshold for anomaly detection
     threshold = autoencoder.find_anomaly_threshold(training_sequences)
-    
-    # 7. Save the trained model for Sentinel to use
     autoencoder.save_model()
     
     print("\n--- Training Process Complete ---")
