@@ -7,70 +7,83 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.feature_extraction import FeatureHasher
 import joblib
 
-class LSTMAutoencoder:
-    """
-    Handles the creation, training, and evaluation of the LSTM Autoencoder model.
-    """
-    def __init__(self, timesteps=10, n_features=5):
+# --- CONFIGURATION ---
+TIMESTEPS = 10 # How many snapshots form a single sequence
+
+# Define which columns are which type for preprocessing
+CATEGORICAL_COLS = ['process_name', 'username']
+NUMERICAL_COLS = ['cpu_percent', 'memory_percent', 'num_threads', 'net_connections']
+# The final number of features will be the sum of hashed features and numerical features
+N_HASH_FEATURES = 5 
+N_FEATURES = N_HASH_FEATURES + len(NUMERICAL_COLS)
+
+
+class AdvancedLSTMAutoencoder:
+    def __init__(self):
         self.model = None
         self.history = None
-        self.timesteps = timesteps
-        self.n_features = n_features
+        # Initialize preprocessors that will be fitted on the data
         self.scaler = StandardScaler()
-        self.hasher = FeatureHasher(n_features=self.n_features, input_type='string')
+        self.hasher = FeatureHasher(n_features=N_HASH_FEATURES, input_type='string')
 
     def preprocess_data(self, df):
         """
-        Converts the raw log data from the CSV into numerical sequences for the LSTM.
+        Processes the multi-feature dataframe into numerical sequences for the LSTM.
         """
-        print("Preprocessing data...")
-        # Ensure the column is treated as strings
-        process_names = df['process_name'].astype(str).to_list()
-        
-        # The FeatureHasher expects a list of lists. We wrap each process name in its own list.
-        formatted_for_hashing = [[name] for name in process_names]
-        
-        # Use the correctly formatted list for hashing
-        hashed_features = self.hasher.fit_transform(formatted_for_hashing).toarray()
-        
-        # Scale the features
-        scaled_features = self.scaler.fit_transform(hashed_features)
-        
-        # Create sequences of data
+        print("Preprocessing enhanced data...")
+
+        # 1. Handle Categorical Features with Hashing
+        # Convert all categorical columns to string and create a list of records
+        categorical_data = df[CATEGORICAL_COLS].astype(str).to_dict('records')
+        hashed_features = self.hasher.fit_transform(categorical_data).toarray()
+        print(f"Hashed categorical features into shape: {hashed_features.shape}")
+
+        # 2. Handle Numerical Features with Scaling
+        numerical_data = df[NUMERICAL_COLS].values
+        scaled_features = self.scaler.fit_transform(numerical_data)
+        print(f"Scaled numerical features into shape: {scaled_features.shape}")
+
+        # 3. Combine preprocessed features
+        processed_features = np.hstack((hashed_features, scaled_features))
+        print(f"Combined features into final shape: {processed_features.shape}")
+
+        # 4. Create sequences from the combined features
         sequences = []
-        for i in range(len(scaled_features) - self.timesteps + 1):
-            sequences.append(scaled_features[i:i + self.timesteps])
+        for i in range(len(processed_features) - TIMESTEPS + 1):
+            sequences.append(processed_features[i:i + TIMESTEPS])
             
+        if not sequences:
+            print("[ERROR] No sequences were created. The dataset is likely too small for the TIMESTEPS setting.")
+            return np.array([])
+
         return np.array(sequences)
 
     def build_model(self):
         """
         Defines the architecture of the LSTM Autoencoder neural network.
         """
-        inputs = Input(shape=(self.timesteps, self.n_features))
-        encoded = LSTM(128, activation='relu')(inputs)
-        decoded = RepeatVector(self.timesteps)(encoded)
+        inputs = Input(shape=(TIMESTEPS, N_FEATURES))
+        # Encoder
+        encoded = LSTM(128, activation='relu', return_sequences=False)(inputs)
+        encoded = RepeatVector(TIMESTEPS)(encoded)
+        # Decoder
         decoded = LSTM(128, activation='relu', return_sequences=True)(decoded)
-        output = TimeDistributed(Dense(self.n_features))(decoded)
+        output = TimeDistributed(Dense(N_FEATURES))(decoded)
         
         self.model = Model(inputs, output)
         self.model.compile(optimizer='adam', loss='mae')
-        print("LSTM Autoencoder model built successfully.")
+        print(f"LSTM Autoencoder model built for {N_FEATURES} features.")
         self.model.summary()
 
     def train(self, sequences):
         """
         Trains the autoencoder on the preprocessed sequences of 'normal' activity.
         """
-        if self.model is None:
-            print("Model has not been built yet. Call build_model() first.")
-            return
-
-        print("\nStarting model training... This may take a while.")
+        print("\nStarting model training...")
         self.history = self.model.fit(
             sequences, sequences,
-            epochs=30, # Increased epochs for potentially better learning
-            batch_size=32,
+            epochs=30,
+            batch_size=64,
             validation_split=0.1,
             shuffle=False,
             callbacks=[
@@ -81,53 +94,50 @@ class LSTMAutoencoder:
 
     def find_anomaly_threshold(self, sequences):
         """
-        Calculates the reconstruction error threshold to identify anomalies.
+        Calculates a statistical threshold for identifying anomalies.
         """
         print("\nFinding anomaly threshold...")
         reconstructions = self.model.predict(sequences)
+        # Calculate loss for each sequence
         train_mae_loss = np.mean(np.abs(reconstructions - sequences), axis=(1, 2))
         
-        # Using a more robust statistical method for the threshold
+        # Set threshold to mean + 3 standard deviations (a common statistical approach)
         threshold = np.mean(train_mae_loss) + 3 * np.std(train_mae_loss)
         print(f"Reconstruction error threshold set to: {threshold}")
         return threshold
 
-    def save_all(self, model_path="lstm_autoencoder.keras", scaler_path="scaler.gz", hasher_path="hasher.gz", threshold_path="threshold.txt", threshold=0.0):
-        """Saves the trained model, preprocessors, and threshold to files."""
-        if self.model:
-            self.model.save(model_path)
-            print(f"Model saved to {model_path}")
+    def save_all(self, threshold, model_path="lstm_autoencoder.keras", scaler_path="scaler.gz", hasher_path="hasher.gz", threshold_path="threshold.txt"):
+        """Saves the model, preprocessors, and threshold."""
+        self.model.save(model_path)
         joblib.dump(self.scaler, scaler_path)
-        print(f"Scaler saved to {scaler_path}")
         joblib.dump(self.hasher, hasher_path)
-        print(f"Hasher saved to {hasher_path}")
         with open(threshold_path, 'w') as f:
             f.write(str(threshold))
-        print(f"Threshold saved to {threshold_path}")
+        print(f"\nSuccessfully saved model, preprocessors, and threshold.")
 
-
-# --- Main execution block to run the training process ---
+# --- Main execution block ---
 if __name__ == '__main__':
     try:
+        # Load the raw data collected by the new data_collector.py
         dataframe = pd.read_csv('baseline_data.csv')
-        print(f"Loaded {len(dataframe)} log entries from baseline_data.csv")
+        # Drop columns that are not features for the model
+        dataframe = dataframe.drop(columns=['timestamp', 'pid'])
+        print(f"Loaded {len(dataframe)} records from baseline_data.csv")
     except FileNotFoundError:
         print("[ERROR] baseline_data.csv not found. Please run data_collector.py first.")
         exit()
+    except Exception as e:
+        print(f"Error loading or parsing CSV: {e}")
+        exit()
 
-    autoencoder = LSTMAutoencoder()
+    autoencoder = AdvancedLSTMAutoencoder()
     training_sequences = autoencoder.preprocess_data(dataframe)
     
-    if training_sequences.size == 0:
-        print("[ERROR] No training sequences were created. The input data might be too short for the current timesteps setting.")
-        exit()
+    if training_sequences.size > 0:
+        autoencoder.build_model()
+        autoencoder.train(training_sequences)
+        threshold = autoencoder.find_anomaly_threshold(training_sequences)
+        autoencoder.save_all(threshold=threshold)
         
-    autoencoder.build_model()
-    autoencoder.train(training_sequences)
-    threshold = autoencoder.find_anomaly_threshold(training_sequences)
-    
-    # Save everything needed for inference
-    autoencoder.save_all(threshold=threshold)
-    
-    print("\n--- Training Process Complete ---")
-    print("A trained model 'lstm_autoencoder.keras' and its settings are now ready for integration.")
+        print("\n--- Training Process Complete ---")
+        print("A new, more advanced model is ready for integration with Sentinel.")
