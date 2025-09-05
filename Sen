@@ -1,3 +1,16 @@
+In one terminal, run this command to start monitoring the system logs specifically for the yes process:
+
+Bash
+
+journalctl -f -o json | grep '"SYSLOG_IDENTIFIER":"yes"'
+Your cursor will just sit there, waiting for new logs. That's normal.
+
+In a second terminal, start the yes command:
+
+Bash
+
+yes "testing the logs" > /dev/null &
+
 import google.generativeai as genai
 import os
 import sys
@@ -14,7 +27,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_extraction import FeatureHasher
-import joblib  # <-- Added for loading preprocessors
+import joblib
 import re
 import csv
 import subprocess
@@ -26,7 +39,7 @@ LOG_FILE_PATH = "sentinel_audit.log"
 SURICATA_LOG_PATH = "/var/log/suricata/eve.json"
 
 # --- ANOMALY DETECTION FILE PATHS ---
-ANOMALY_MODEL_PATH = "lstm_autoencoder.keras" # <-- Updated to .keras format
+ANOMALY_MODEL_PATH = "lstm_autoencoder.keras"
 SCALER_PATH = "scaler.gz"
 HASHER_PATH = "hasher.gz"
 THRESHOLD_PATH = "threshold.txt"
@@ -50,7 +63,7 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 anomaly_model = None
 anomaly_scaler = None
 anomaly_hasher = None
-anomaly_threshold = 0.0 # Will be loaded from file
+anomaly_threshold = 0.0
 
 # --- HELPER FUNCTIONS ---
 
@@ -144,7 +157,6 @@ def check_virustotal_indicator(indicator):
 def block_indicator(indicator):
     """Handles the logic to block a given indicator (URL or IP)."""
     try:
-        # Resolve hostname to IP if necessary
         is_ip = all(c in "0123456789." for c in indicator)
         if not is_ip:
             hostname = urlparse(f'//{indicator}' if '://' not in indicator else indicator).hostname
@@ -176,7 +188,6 @@ def block_indicator(indicator):
         error_message = f"An unexpected error occurred during the block action: {e}"
         print(f"Sentinel: [ERROR] {error_message}")
         log_event({"action": "BLOCK_IP_EXCEPTION", "details": error_message})
-
 
 # --- PROACTIVE MONITORING THREADS ---
 
@@ -227,7 +238,10 @@ def run_anomaly_monitor():
                     process_name = log_entry.get('SYSLOG_IDENTIFIER', 'UNKNOWN').strip()
                     
                     if process_name and process_name != 'UNKNOWN':
-                        # Preprocess using loaded hasher and scaler
+                        # <<< --- START DEBUG PRINT 1 --- >>>
+                        print(f"  [Debug] Processing log: {process_name}")
+                        # <<< --- END DEBUG PRINT 1 --- >>>
+                        
                         hashed_feature = anomaly_hasher.transform([[process_name]]).toarray()
                         scaled_feature = anomaly_scaler.transform(hashed_feature)
                         
@@ -241,6 +255,10 @@ def run_anomaly_monitor():
                             
                             reconstruction = anomaly_model.predict(sequence_np, verbose=0)
                             mae_loss = np.mean(np.abs(reconstruction - sequence_np))
+
+                            # <<< --- START DEBUG PRINT 2 --- >>>
+                            print(f"  [Debug] Loss: {mae_loss:.6f} | Threshold: {anomaly_threshold:.6f}")
+                            # <<< --- END DEBUG PRINT 2 --- >>>
 
                             if mae_loss > anomaly_threshold:
                                 print(f"\nSentinel: [ANOMALY DETECTED] Reconstruction Error: {mae_loss:.4f} > Threshold: {anomaly_threshold:.4f}")
@@ -298,34 +316,23 @@ def run_sentinel_cli():
             print(f"Sentinel: {response_text}")
 
 if __name__ == "__main__":
-    # --- Load the anomaly detection model and its components ---
     try:
         print("Sentinel: Loading anomaly detection model and preprocessors...")
-        
-        # Load the model without its training optimizer
         anomaly_model = tf.keras.models.load_model(ANOMALY_MODEL_PATH, compile=False)
-        
-        # Load the exact preprocessors used during training
         anomaly_scaler = joblib.load(SCALER_PATH)
         anomaly_hasher = joblib.load(HASHER_PATH)
-
-        # Load the calculated threshold
         with open(THRESHOLD_PATH, 'r') as f:
             anomaly_threshold = float(f.read().strip())
-        
         print(f"Sentinel: Anomaly model and preprocessors loaded. Threshold set to {anomaly_threshold:.4f}.")
-
     except Exception as e:
         print(f"Sentinel: [ERROR] Failed to load anomaly model or preprocessors: {e}. Anomaly detection will be disabled.")
-        anomaly_model = None # Ensure it's None if loading failed
+        anomaly_model = None
 
-    # --- Start proactive monitoring threads ---
     suricata_thread = threading.Thread(target=run_suricata_monitor, daemon=True)
     suricata_thread.start()
 
-    if anomaly_model: # Only start monitor if model loaded successfully
+    if anomaly_model:
         anomaly_thread = threading.Thread(target=run_anomaly_monitor, daemon=True)
         anomaly_thread.start()
 
-    # --- Run the CLI in the main thread ---
     run_sentinel_cli()
