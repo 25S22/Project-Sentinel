@@ -1,74 +1,82 @@
-import time
-import json
+import psutil
 import csv
-import subprocess
+import time
+import os
 from datetime import datetime
 
-# --- CONFIGURATION ---
-# We no longer read from a static file, we will stream from journalctl
-OUTPUT_CSV_FILE = 'baseline_data.csv' # The structured dataset for our ML model
-CAPTURE_DURATION_SECONDS = 3600  # Run for 1 hour to start
+# Configuration
+CSV_FILE = "baseline_data.csv"
+COLLECTION_INTERVAL_SECONDS = 2 # How often to collect data
+FIELDNAMES = [
+    'timestamp', 
+    'pid', 
+    'process_name', 
+    'username', 
+    'cpu_percent', 
+    'memory_percent', 
+    'num_threads',
+    'net_connections' # Number of established network connections
+]
 
-def capture_baseline_data():
+def get_system_snapshot():
     """
-    Monitors the systemd journal for a set duration and saves parsed data to a CSV.
+    Gathers a list of dictionaries, where each dictionary represents
+    the current state of a running process.
     """
-    print("Starting data collection from systemd journal via journalctl...")
-    print(f"This will run for {CAPTURE_DURATION_SECONDS / 60:.0f} minutes.")
+    processes_snapshot = []
+    for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'num_threads', 'connections']):
+        try:
+            # Get process details
+            pinfo = proc.info
+            
+            # Count only established network connections for this process
+            net_conns = 0
+            if pinfo['connections'] is not None:
+                net_conns = len([c for c in pinfo['connections'] if c.status == psutil.CONN_ESTABLISHED])
+
+            processes_snapshot.append({
+                'timestamp': datetime.now().isoformat(),
+                'pid': pinfo['pid'],
+                'process_name': pinfo['name'],
+                'username': pinfo['username'],
+                'cpu_percent': pinfo['cpu_percent'],
+                'memory_percent': round(pinfo['memory_percent'], 2),
+                'num_threads': pinfo['num_threads'],
+                'net_connections': net_conns
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            # Ignore processes that have terminated or are inaccessible
+            pass
+    return processes_snapshot
+
+def start_collection():
+    """
+    Main function to run the data collection and write to a CSV file.
+    """
+    file_exists = os.path.isfile(CSV_FILE)
     
-    start_time = time.time()
-    
-    # The command to stream new journal entries in JSON format
-    command = ['journalctl', '-f', '-o', 'json']
+    print(f"Starting data collection... Appending to {CSV_FILE}")
+    print("Press Ctrl+C to stop.")
     
     try:
-        # Open the output CSV file for writing
-        with open(OUTPUT_CSV_FILE, 'w', newline='') as csvfile:
-            fieldnames = ['timestamp', 'process_name', 'pid', 'message']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
+        with open(CSV_FILE, 'a', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=FIELDNAMES)
+            if not file_exists or os.path.getsize(CSV_FILE) == 0:
+                writer.writeheader()  # Write header only if file is new/empty
             
-            # Start the journalctl process
-            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            
-            # Read from the process's output stream
-            for line in iter(process.stdout.readline, ''):
-                if time.time() - start_time > CAPTURE_DURATION_SECONDS:
-                    print("\nCapture duration reached. Stopping data collection...")
-                    break
+            while True:
+                snapshot = get_system_snapshot()
+                if snapshot:
+                    writer.writerows(snapshot)
+                    # Optional: uncomment to see live data being collected
+                    # print(f"Logged {len(snapshot)} processes at {datetime.now().strftime('%H:%M:%S')}")
                 
-                if line:
-                    try:
-                        log_entry = json.loads(line)
-                        
-                        # Extract relevant fields from the JSON output
-                        # We use .get() to avoid errors if a key is missing
-                        timestamp_usec = int(log_entry.get('__REALTIME_TIMESTAMP', 0))
-                        dt_object = datetime.fromtimestamp(timestamp_usec / 1000000)
-                        
-                        parsed_data = {
-                            'timestamp': dt_object.isoformat(),
-                            'process_name': log_entry.get('SYSLOG_IDENTIFIER', 'N/A'),
-                            'pid': log_entry.get('_PID', 'N/A'),
-                            'message': log_entry.get('MESSAGE', '')
-                        }
-                        writer.writerow(parsed_data)
-                    except json.JSONDecodeError:
-                        # Ignore lines that are not valid JSON
-                        continue
-            
-            # Clean up the process
-            process.terminate()
-
-    except FileNotFoundError:
-        print("[ERROR] 'journalctl' command not found. Please ensure systemd is installed.")
-        return
+                time.sleep(COLLECTION_INTERVAL_SECONDS)
+                
+    except KeyboardInterrupt:
+        print(f"\nData collection stopped. Baseline data saved to {CSV_FILE}.")
     except Exception as e:
-        print(f"[ERROR] An unexpected error occurred: {e}")
+        print(f"\nAn error occurred: {e}")
 
-    print(f"\nData collection complete. Baseline data saved to {OUTPUT_CSV_FILE}")
-
-
-if __name__ == '__main__':
-    # This script still needs sudo to run journalctl without restrictions
-    capture_baseline_data()
+if __name__ == "__main__":
+    start_collection()
