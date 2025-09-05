@@ -14,6 +14,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_extraction import FeatureHasher
+import joblib  # <-- Added for loading preprocessors
 import re
 import csv
 import subprocess
@@ -22,12 +23,19 @@ import subprocess
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 VT_API_KEY = os.getenv("VT_API_KEY")
 LOG_FILE_PATH = "sentinel_audit.log"
-SURICATA_LOG_PATH = "/var/log/suricata/eve.json" # Path to Suricata's alert log
-ANOMALY_MODEL_PATH = "lstm_autoencoder.h5"
-ANOMALY_THRESHOLD = 1.4413169324492514 # IMPORTANT: Update with the exact threshold from your training output!
-ANOMALY_TIMESTEPS = 10 # Must match the timesteps used during training
-ANOMALY_N_FEATURES = 5 # Must match the n_features used during training
-SYSTEM_LOG_SOURCE = ['journalctl', '-f', '-o', 'json'] # Command to stream system logs
+SURICATA_LOG_PATH = "/var/log/suricata/eve.json"
+
+# --- ANOMALY DETECTION FILE PATHS ---
+ANOMALY_MODEL_PATH = "lstm_autoencoder.keras" # <-- Updated to .keras format
+SCALER_PATH = "scaler.gz"
+HASHER_PATH = "hasher.gz"
+THRESHOLD_PATH = "threshold.txt"
+
+# --- ANOMALY DETECTION PARAMETERS (must match training) ---
+ANOMALY_TIMESTEPS = 10
+ANOMALY_N_FEATURES = 5
+
+SYSTEM_LOG_SOURCE = ['journalctl', '-f', '-o', 'json']
 
 # --- API KEY VALIDATION ---
 if not GEMINI_API_KEY:
@@ -38,10 +46,11 @@ if not VT_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# Global variables for the anomaly detection model
+# --- Global variables for the anomaly detection components ---
 anomaly_model = None
 anomaly_scaler = None
 anomaly_hasher = None
+anomaly_threshold = 0.0 # Will be loaded from file
 
 # --- HELPER FUNCTIONS ---
 
@@ -69,7 +78,7 @@ def verify_rule_exists(ip_to_check):
         table.refresh()
         chain = iptc.Chain(table, "INPUT")
         for rule in chain.rules:
-            if ip_to_check in rule.src:
+            if rule.src and ip_to_check in rule.src:
                 return True
         return False
     except Exception as e:
@@ -135,28 +144,23 @@ def check_virustotal_indicator(indicator):
 def block_indicator(indicator):
     """Handles the logic to block a given indicator (URL or IP)."""
     try:
-        url_to_parse = indicator
-        if not (url_to_parse.startswith('http://') or url_to_parse.startswith('https://')):
-            is_ip = all(c in "0123456789." for c in indicator)
-            if not is_ip:
-                url_to_parse = 'https://' + url_to_parse
-        
-        parsed_url = urlparse(url_to_parse)
-        hostname_to_block = parsed_url.hostname if parsed_url.hostname else indicator
+        # Resolve hostname to IP if necessary
+        is_ip = all(c in "0123456789." for c in indicator)
+        if not is_ip:
+            hostname = urlparse(f'//{indicator}' if '://' not in indicator else indicator).hostname
+            ip_to_block = socket.gethostbyname(hostname)
+        else:
+            ip_to_block = indicator
 
-        if not hostname_to_block:
-            raise ValueError("Could not extract a valid hostname from the indicator.")
-            
-        ip_to_block = socket.gethostbyname(hostname_to_block)
-        
         print(f"Sentinel: Attempting to apply firewall block for IP: {ip_to_block}...")
         table = iptc.Table(iptc.Table.FILTER)
-        table.autocommit = True
         chain = iptc.Chain(table, "INPUT")
         rule = iptc.Rule()
         rule.src = ip_to_block
-        rule.target = iptc.Target(rule, "DROP")
+        rule.target = chain.create_target("DROP")
         chain.insert_rule(rule)
+        table.commit()
+        table.refresh()
 
         print("Sentinel: Verifying block implementation...")
         if verify_rule_exists(ip_to_block):
@@ -172,6 +176,7 @@ def block_indicator(indicator):
         error_message = f"An unexpected error occurred during the block action: {e}"
         print(f"Sentinel: [ERROR] {error_message}")
         log_event({"action": "BLOCK_IP_EXCEPTION", "details": error_message})
+
 
 # --- PROACTIVE MONITORING THREADS ---
 
@@ -202,20 +207,17 @@ def run_suricata_monitor():
 
 def run_anomaly_monitor():
     """Monitors system logs for anomalies using the trained LSTM Autoencoder."""
-    global anomaly_model, anomaly_scaler, anomaly_hasher
+    global anomaly_model, anomaly_scaler, anomaly_hasher, anomaly_threshold
 
-    if anomaly_model is None:
-        print("Sentinel: [ANOMALY MONITOR ERROR] Anomaly model not loaded. Anomaly detection is disabled.")
+    if not all([anomaly_model, anomaly_scaler, anomaly_hasher]):
+        print("Sentinel: [ANOMALY MONITOR ERROR] Anomaly detection components not fully loaded. Monitor disabled.")
         return
 
     print("Sentinel: Anomaly monitoring thread started. Watching system logs for unusual behavior...")
     
-    # Initialize a list to hold the latest sequence of features
     current_sequence_features = []
-    
     process = None
     try:
-        # Start the journalctl process to stream logs
         process = subprocess.Popen(SYSTEM_LOG_SOURCE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         
         for line in iter(process.stdout.readline, ''):
@@ -225,42 +227,36 @@ def run_anomaly_monitor():
                     process_name = log_entry.get('SYSLOG_IDENTIFIER', 'UNKNOWN').strip()
                     
                     if process_name and process_name != 'UNKNOWN':
-                        # Preprocess the single log entry using the loaded hasher and scaler
-                        # Wrap the process_name in a list, as the hasher expects it
+                        # Preprocess using loaded hasher and scaler
                         hashed_feature = anomaly_hasher.transform([[process_name]]).toarray()
                         scaled_feature = anomaly_scaler.transform(hashed_feature)
                         
-                        current_sequence_features.append(scaled_feature[0]) # Add the scaled feature to the sequence
+                        current_sequence_features.append(scaled_feature[0])
 
-                        # Maintain the sequence length
                         if len(current_sequence_features) > ANOMALY_TIMESTEPS:
                             current_sequence_features.pop(0)
 
-                        # Once we have enough data, check for anomalies
                         if len(current_sequence_features) == ANOMALY_TIMESTEPS:
                             sequence_np = np.array(current_sequence_features).reshape(1, ANOMALY_TIMESTEPS, ANOMALY_N_FEATURES)
                             
                             reconstruction = anomaly_model.predict(sequence_np, verbose=0)
                             mae_loss = np.mean(np.abs(reconstruction - sequence_np))
 
-                            if mae_loss > ANOMALY_THRESHOLD:
-                                print(f"\nSentinel: [ANOMALY DETECTED] Reconstruction Error: {mae_loss:.4f} > Threshold: {ANOMALY_THRESHOLD:.4f}")
-                                print(f"Sentinel: Unusual system behavior detected. Initiating investigation for potential threat.")
-                                # Trigger an investigation. Since there's no single IP/URL, we investigate the event.
-                                investigation_prompt = f"Investigate an anomaly detected in system logs with a reconstruction error of {mae_loss:.4f}. This indicates unusual process behavior. Analyze the potential security implications. Recent process: {process_name}. What could be happening?"
+                            if mae_loss > anomaly_threshold:
+                                print(f"\nSentinel: [ANOMALY DETECTED] Reconstruction Error: {mae_loss:.4f} > Threshold: {anomaly_threshold:.4f}")
+                                investigation_prompt = f"Investigate a security anomaly in system logs. Reconstruction error is {mae_loss:.4f}, exceeding the normal behavior threshold. The last observed process was '{process_name}'. Analyze potential threats like unauthorized access, malware execution, or privilege escalation. What could be happening?"
                                 genai_analysis = get_generative_analysis(investigation_prompt)
                                 print("\n--- Anomaly Generative Analysis ---")
                                 print(genai_analysis)
                                 print("-----------------------------------")
-                                log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "details": genai_analysis, "last_process": process_name})
-                                # Consider adding a mechanism to alert the user for action based on the analysis
-                            
+                                log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "threshold": anomaly_threshold, "details": genai_analysis, "last_process": process_name})
+                                
                 except json.JSONDecodeError:
                     continue
                 except Exception as e:
                     print(f"Sentinel: [ANOMALY MONITOR ERROR] Error processing log line: {e}")
             else:
-                time.sleep(0.1) # Wait for new lines
+                time.sleep(0.1)
     except FileNotFoundError:
         print("[ANOMALY MONITOR ERROR] 'journalctl' command not found. Anomaly monitor disabled.")
     except Exception as e:
@@ -302,37 +298,34 @@ def run_sentinel_cli():
             print(f"Sentinel: {response_text}")
 
 if __name__ == "__main__":
-    # Load the anomaly detection model and its components once at startup
+    # --- Load the anomaly detection model and its components ---
     try:
         print("Sentinel: Loading anomaly detection model and preprocessors...")
-        anomaly_model = tf.keras.models.load_model(ANOMALY_MODEL_PATH)
-        # We need to re-initialize the scaler and hasher with dummy data or load saved states
-        # For simplicity and given the FeatureHasher's nature, we will re-fit scaler/hasher on a small dummy data.
-        # In a production system, these would be saved alongside the model.
         
-        # Re-initialize hasher with dummy values based on expected types
-        dummy_process_names = ["init", "systemd", "cron", "sshd", "python"] # Example common process names
-        anomaly_hasher = FeatureHasher(n_features=ANOMALY_N_FEATURES, input_type='string')
-        anomaly_hasher.fit([[name] for name in dummy_process_names]) # Fit with dummy list of lists
+        # Load the model without its training optimizer
+        anomaly_model = tf.keras.models.load_model(ANOMALY_MODEL_PATH, compile=False)
         
-        # Re-initialize scaler
-        anomaly_scaler = StandardScaler()
-        # Fit scaler with dummy data matching the hashed features' dimensions
-        dummy_hashed_features = anomaly_hasher.transform([[name] for name in dummy_process_names]).toarray()
-        anomaly_scaler.fit(dummy_hashed_features)
+        # Load the exact preprocessors used during training
+        anomaly_scaler = joblib.load(SCALER_PATH)
+        anomaly_hasher = joblib.load(HASHER_PATH)
+
+        # Load the calculated threshold
+        with open(THRESHOLD_PATH, 'r') as f:
+            anomaly_threshold = float(f.read().strip())
         
-        print("Sentinel: Anomaly model and preprocessors loaded successfully.")
+        print(f"Sentinel: Anomaly model and preprocessors loaded. Threshold set to {anomaly_threshold:.4f}.")
+
     except Exception as e:
         print(f"Sentinel: [ERROR] Failed to load anomaly model or preprocessors: {e}. Anomaly detection will be disabled.")
         anomaly_model = None # Ensure it's None if loading failed
 
-    # Create and start the proactive monitoring threads
+    # --- Start proactive monitoring threads ---
     suricata_thread = threading.Thread(target=run_suricata_monitor, daemon=True)
     suricata_thread.start()
 
-    if anomaly_model: # Only start anomaly monitor if model loaded successfully
+    if anomaly_model: # Only start monitor if model loaded successfully
         anomaly_thread = threading.Thread(target=run_anomaly_monitor, daemon=True)
         anomaly_thread.start()
 
-    # Run the CLI in the main thread
+    # --- Run the CLI in the main thread ---
     run_sentinel_cli()
