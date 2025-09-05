@@ -1,8 +1,3 @@
-## The Code Fix: Making URL Parsing More Robust
-Here is the updated sentinel.py script. The new logic inside the blocking section ensures that any URL you provide will be parsed correctly.
-
-Python
-
 import google.generativeai as genai
 import os
 import sys
@@ -10,13 +5,29 @@ import socket
 import iptc
 import vt
 import json
+import time
+import threading
 from datetime import datetime
 from urllib.parse import urlparse
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from sklearn.preprocessing import StandardScaler
+from sklearn.feature_extraction import FeatureHasher
+import re
+import csv
+import subprocess
 
 # --- CONFIGURATION ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 VT_API_KEY = os.getenv("VT_API_KEY")
 LOG_FILE_PATH = "sentinel_audit.log"
+SURICATA_LOG_PATH = "/var/log/suricata/eve.json" # Path to Suricata's alert log
+ANOMALY_MODEL_PATH = "lstm_autoencoder.h5"
+ANOMALY_THRESHOLD = 1.4413169324492514 # IMPORTANT: Update with the exact threshold from your training output!
+ANOMALY_TIMESTEPS = 10 # Must match the timesteps used during training
+ANOMALY_N_FEATURES = 5 # Must match the n_features used during training
+SYSTEM_LOG_SOURCE = ['journalctl', '-f', '-o', 'json'] # Command to stream system logs
 
 # --- API KEY VALIDATION ---
 if not GEMINI_API_KEY:
@@ -27,6 +38,11 @@ if not VT_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
+# Global variables for the anomaly detection model
+anomaly_model = None
+anomaly_scaler = None
+anomaly_hasher = None
+
 # --- HELPER FUNCTIONS ---
 
 def log_event(data):
@@ -36,21 +52,7 @@ def log_event(data):
             log_entry = {"timestamp": datetime.now().isoformat(), "event_data": data}
             log_file.write(json.dumps(log_entry) + '\n')
     except Exception as e:
-        print(f"Sentinel: [ERROR] Failed to write to log file: {e}")
-
-def check_virustotal(url):
-    """Checks the reputation of a URL using the VirusTotal API."""
-    print(f"\nSentinel: Conducting OSINT on {url} via VirusTotal...")
-    try:
-        with vt.Client(VT_API_KEY) as client:
-            url_id = vt.url_id(url)
-            url_analysis = client.get_object(f"/urls/{url_id}")
-            stats = url_analysis.last_analysis_stats
-            malicious_votes = stats.get('malicious', 0)
-            result = {"url": url, "status": "completed", "malicious_vendors": malicious_votes}
-            return result
-    except Exception as e:
-        return {"url": url, "status": "error", "message": str(e)}
+        print(f"\nSentinel: [ERROR] Failed to write to log file: {e}")
 
 def get_generative_analysis(prompt):
     """Sends a prompt to the AI model and returns the text response."""
@@ -71,111 +73,266 @@ def verify_rule_exists(ip_to_check):
                 return True
         return False
     except Exception as e:
-        print(f"Sentinel: [VERIFICATION ERROR] Could not read iptables rules: {e}")
+        print(f"\nSentinel: [VERIFICATION ERROR] Could not read iptables rules: {e}")
         return False
 
-# --- MAIN APPLICATION LOGIC ---
-print("Sentinel: Greetings, I am your personal defensive agent. How can I assist you?")
+# --- ANALYSIS & BLOCKING LOGIC ---
 
-while True:
-    user_input = input("You > ")
-    if user_input.lower() in ['exit', 'quit']:
-        print("Sentinel: Shutting down. Goodbye!")
-        break
+def investigate_indicator(indicator, source="MANUAL_INPUT"):
+    """
+    Central function to investigate an IP or URL.
+    This function performs the OSINT and AI analysis.
+    """
+    print(f"\n\n--- [ NEW INVESTIGATION ] ---")
+    print(f"Source: {source}")
+    print(f"Indicator: {indicator}")
+    
+    # --- VIRUSTOTAL CHECK ---
+    print(f"\nSentinel: Conducting OSINT on {indicator} via VirusTotal...")
+    vt_result = check_virustotal_indicator(indicator)
+    log_event(vt_result)
 
-    if user_input.lower().startswith("check_reputation"):
-        parts = user_input.split()
-        if len(parts) < 2:
-            print("Sentinel: Please provide a URL. Usage: check_reputation <URL>")
-            continue
-        
-        url_to_check = parts[1]
-        
-        # (VirusTotal and Generative Analysis sections remain the same)
-        vt_result = check_virustotal(url_to_check)
-        log_event(vt_result)
+    if vt_result["status"] == "error":
+        print(f"Sentinel: [ERROR] OSINT failed. Reason: {vt_result['message']}")
+        return None, None
+    
+    malicious_count = vt_result['malicious_vendors']
+    print(f"Sentinel: OSINT complete. VirusTotal reports {malicious_count} malicious detections.")
 
-        if vt_result["status"] == "error":
-            print(f"Sentinel: [ERROR] OSINT failed. Reason: {vt_result['message']}")
-            continue
-            
-        malicious_count = vt_result['malicious_vendors']
-        print(f"Sentinel: OSINT complete. VirusTotal reports {malicious_count} malicious detections.")
-
-        print(f"\nSentinel: Performing generative analysis...")
-        
-        if malicious_count > 0:
-            analysis_prompt = f"Analyze the website '{url_to_check}'.\n\n1.  **Overview:** First, briefly describe the website's stated purpose.\n\n2.  **Threat Analysis:** More importantly, this site was flagged with {malicious_count} malicious detections. Provide a detailed analysis of the likely threats (e.g., phishing, malware, scam)."
-        else:
-            analysis_prompt = f"Analyze the website '{url_to_check}'.\n\n1.  **Detailed Overview:** Focus on providing a detailed overview of the website: its purpose, the business behind it, and its content.\n\n2.  **Security Reputation:** Conclude with a brief mention of its positive security reputation."
-        
-        analysis_text = get_generative_analysis(analysis_prompt)
-        print("--- Generative Analysis ---")
-        print(analysis_text)
-        print("---------------------------")
-        
-        if malicious_count > 0:
-            confirmation = input("\nSentinel: Threat detected. Would you like me to block this URL? (yes/no) > ")
-            if confirmation.lower() == 'yes':
-                try:
-                    # --- FIX STARTS HERE ---
-                    # 1. Sanitize the URL to ensure it has a scheme for proper parsing.
-                    url_to_parse = url_to_check
-                    if not (url_to_parse.startswith('http://') or url_to_parse.startswith('https://')):
-                        url_to_parse = 'https://' + url_to_parse
-                    
-                    # 2. Parse the sanitized URL.
-                    parsed_url = urlparse(url_to_parse)
-                    hostname_to_block = parsed_url.hostname
-                    # --- FIX ENDS HERE ---
-
-                    if not hostname_to_block:
-                        raise ValueError("Could not extract a valid hostname from the URL.")
-                        
-                    ip_to_block = socket.gethostbyname(hostname_to_block)
-                    
-                    print(f"Sentinel: Attempting to apply firewall block for IP: {ip_to_block}...")
-                    table = iptc.Table(iptc.Table.FILTER)
-                    table.autocommit = True
-                    chain = iptc.Chain(table, "INPUT")
-                    rule = iptc.Rule()
-                    rule.src = ip_to_block
-                    rule.target = iptc.Target(rule, "DROP")
-                    chain.insert_rule(rule)
-
-                    print("Sentinel: Verifying block implementation...")
-                    if verify_rule_exists(ip_to_block):
-                        success_message = f"VERIFICATION SUCCESS: Firewall rule for {ip_to_block} is active."
-                        print(f"Sentinel: {success_message}")
-                        log_event({"action": "BLOCK_IP_VERIFIED", "details": success_message})
-                    else:
-                        failure_message = f"VERIFICATION FAILED: Rule for {ip_to_block} was NOT added."
-                        print(f"Sentinel: {failure_message}")
-                        log_event({"action": "BLOCK_IP_FAILED", "details": failure_message})
-
-                except Exception as e:
-                    error_message = f"An unexpected error occurred during the block action: {e}"
-                    print(f"Sentinel: [ERROR] {error_message}")
-                    log_event({"action": "BLOCK_IP_EXCEPTION", "details": error_message})
-            else:
-                print("Sentinel: Understood. No action will be taken.")
-                log_event({"action": "USER_DECLINED_BLOCK", "url": url_to_check})
+    # --- GENERATIVE ANALYSIS ---
+    print(f"\nSentinel: Performing generative analysis...")
+    if malicious_count > 0:
+        analysis_prompt = f"Analyze the indicator '{indicator}'.\n\n1. **Overview:** Briefly describe its identity (e.g., website purpose, IP owner).\n\n2. **Threat Analysis:** It was flagged with {malicious_count} malicious detections. Detail the likely threats (phishing, malware, scam, etc.) and risks."
     else:
-        print("Sentinel: Processing general query...")
-        response_text = get_generative_analysis(user_input)
-        print(f"Sentinel: {response_text}")
+        analysis_prompt = f"Analyze the indicator '{indicator}'.\n\n1. **Detailed Overview:** Provide a detailed overview of the website or IP owner.\n\n2. **Security Reputation:** Conclude with its security reputation, noting it was not flagged by scanners."
+    
+    analysis_text = get_generative_analysis(analysis_prompt)
+    print("\n--- Generative Analysis ---")
+    print(analysis_text)
+    print("---------------------------")
+    print(f"--- [ END INVESTIGATION ] ---\n")
+    
+    return malicious_count, indicator
 
-## How to Watch the Firewall in Real-Time
-To see the firewall rule appear the instant your script adds it, you can use the watch command. This command runs another command repeatedly, showing you a live, auto-refreshing view.
+def check_virustotal_indicator(indicator):
+    """Wrapper to handle both URLs and IPs for VirusTotal."""
+    is_ip = all(c in "0123456789." for c in indicator)
 
-Instructions:
-Open two terminals.
+    try:
+        with vt.Client(VT_API_KEY) as client:
+            if is_ip:
+                result_obj = client.get_object(f"/ip_addresses/{indicator}")
+            else:
+                url_id = vt.url_id(indicator)
+                result_obj = client.get_object(f"/urls/{url_id}")
+            
+            stats = result_obj.last_analysis_stats
+            malicious_votes = stats.get('malicious', 0)
+            return {"indicator": indicator, "status": "completed", "malicious_vendors": malicious_votes}
+    except Exception as e:
+        return {"indicator": indicator, "status": "error", "message": str(e)}
 
-In Terminal 1, run the following command. This will give you a live view of your firewall's INPUT rules, refreshing every second.
+def block_indicator(indicator):
+    """Handles the logic to block a given indicator (URL or IP)."""
+    try:
+        url_to_parse = indicator
+        if not (url_to_parse.startswith('http://') or url_to_parse.startswith('https://')):
+            is_ip = all(c in "0123456789." for c in indicator)
+            if not is_ip:
+                url_to_parse = 'https://' + url_to_parse
+        
+        parsed_url = urlparse(url_to_parse)
+        hostname_to_block = parsed_url.hostname if parsed_url.hostname else indicator
 
-Bash
+        if not hostname_to_block:
+            raise ValueError("Could not extract a valid hostname from the indicator.")
+            
+        ip_to_block = socket.gethostbyname(hostname_to_block)
+        
+        print(f"Sentinel: Attempting to apply firewall block for IP: {ip_to_block}...")
+        table = iptc.Table(iptc.Table.FILTER)
+        table.autocommit = True
+        chain = iptc.Chain(table, "INPUT")
+        rule = iptc.Rule()
+        rule.src = ip_to_block
+        rule.target = iptc.Target(rule, "DROP")
+        chain.insert_rule(rule)
 
-sudo watch -n 1 'iptables -L INPUT -n -v'
-In Terminal 2, run your Sentinel script as usual (sudo -E sentinel-env/bin/python sentinel.py).
+        print("Sentinel: Verifying block implementation...")
+        if verify_rule_exists(ip_to_block):
+            success_message = f"VERIFICATION SUCCESS: Firewall rule for {ip_to_block} is active."
+            print(f"Sentinel: {success_message}")
+            log_event({"action": "BLOCK_IP_VERIFIED", "details": success_message})
+        else:
+            failure_message = f"VERIFICATION FAILED: Rule for {ip_to_block} was NOT added."
+            print(f"Sentinel: {failure_message}")
+            log_event({"action": "BLOCK_IP_FAILED", "details": failure_message})
 
-When you check a malicious URL and type yes to block it, look at Terminal 1. You will see the new DROP rule appear in real-time. This is the best way to confirm it's working instantly.
+    except Exception as e:
+        error_message = f"An unexpected error occurred during the block action: {e}"
+        print(f"Sentinel: [ERROR] {error_message}")
+        log_event({"action": "BLOCK_IP_EXCEPTION", "details": error_message})
+
+# --- PROACTIVE MONITORING THREADS ---
+
+def run_suricata_monitor():
+    """Monitors the Suricata log file for new alerts in a separate thread."""
+    print("Sentinel: Suricata monitoring thread started. Watching logs...")
+    try:
+        with open(SURICATA_LOG_PATH, 'r') as log_file:
+            log_file.seek(0, 2)
+            while True:
+                new_line = log_file.readline()
+                if new_line:
+                    try:
+                        alert = json.loads(new_line)
+                        if alert.get('event_type') == 'alert':
+                            src_ip = alert.get('src_ip')
+                            signature = alert.get('alert', {}).get('signature')
+                            print(f"\nSentinel: [SURICATA ALERT] Detected: {signature} from {src_ip}")
+                            investigate_indicator(src_ip, source=f"SURICATA: {signature}")
+                    except json.JSONDecodeError:
+                        continue
+                else:
+                    time.sleep(1)
+    except FileNotFoundError:
+        print(f"Sentinel: [MONITOR ERROR] Suricata log not found at {SURICATA_LOG_PATH}. Suricata monitor is disabled.")
+    except Exception as e:
+        print(f"Sentinel: [MONITOR ERROR] An unexpected error occurred in Suricata monitor: {e}")
+
+def run_anomaly_monitor():
+    """Monitors system logs for anomalies using the trained LSTM Autoencoder."""
+    global anomaly_model, anomaly_scaler, anomaly_hasher
+
+    if anomaly_model is None:
+        print("Sentinel: [ANOMALY MONITOR ERROR] Anomaly model not loaded. Anomaly detection is disabled.")
+        return
+
+    print("Sentinel: Anomaly monitoring thread started. Watching system logs for unusual behavior...")
+    
+    # Initialize a list to hold the latest sequence of features
+    current_sequence_features = []
+    
+    process = None
+    try:
+        # Start the journalctl process to stream logs
+        process = subprocess.Popen(SYSTEM_LOG_SOURCE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        
+        for line in iter(process.stdout.readline, ''):
+            if line:
+                try:
+                    log_entry = json.loads(line)
+                    process_name = log_entry.get('SYSLOG_IDENTIFIER', 'UNKNOWN').strip()
+                    
+                    if process_name and process_name != 'UNKNOWN':
+                        # Preprocess the single log entry using the loaded hasher and scaler
+                        # Wrap the process_name in a list, as the hasher expects it
+                        hashed_feature = anomaly_hasher.transform([[process_name]]).toarray()
+                        scaled_feature = anomaly_scaler.transform(hashed_feature)
+                        
+                        current_sequence_features.append(scaled_feature[0]) # Add the scaled feature to the sequence
+
+                        # Maintain the sequence length
+                        if len(current_sequence_features) > ANOMALY_TIMESTEPS:
+                            current_sequence_features.pop(0)
+
+                        # Once we have enough data, check for anomalies
+                        if len(current_sequence_features) == ANOMALY_TIMESTEPS:
+                            sequence_np = np.array(current_sequence_features).reshape(1, ANOMALY_TIMESTEPS, ANOMALY_N_FEATURES)
+                            
+                            reconstruction = anomaly_model.predict(sequence_np, verbose=0)
+                            mae_loss = np.mean(np.abs(reconstruction - sequence_np))
+
+                            if mae_loss > ANOMALY_THRESHOLD:
+                                print(f"\nSentinel: [ANOMALY DETECTED] Reconstruction Error: {mae_loss:.4f} > Threshold: {ANOMALY_THRESHOLD:.4f}")
+                                print(f"Sentinel: Unusual system behavior detected. Initiating investigation for potential threat.")
+                                # Trigger an investigation. Since there's no single IP/URL, we investigate the event.
+                                investigation_prompt = f"Investigate an anomaly detected in system logs with a reconstruction error of {mae_loss:.4f}. This indicates unusual process behavior. Analyze the potential security implications. Recent process: {process_name}. What could be happening?"
+                                genai_analysis = get_generative_analysis(investigation_prompt)
+                                print("\n--- Anomaly Generative Analysis ---")
+                                print(genai_analysis)
+                                print("-----------------------------------")
+                                log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "details": genai_analysis, "last_process": process_name})
+                                # Consider adding a mechanism to alert the user for action based on the analysis
+                            
+                except json.JSONDecodeError:
+                    continue
+                except Exception as e:
+                    print(f"Sentinel: [ANOMALY MONITOR ERROR] Error processing log line: {e}")
+            else:
+                time.sleep(0.1) # Wait for new lines
+    except FileNotFoundError:
+        print("[ANOMALY MONITOR ERROR] 'journalctl' command not found. Anomaly monitor disabled.")
+    except Exception as e:
+        print(f"Sentinel: [ANOMALY MONITOR ERROR] An unexpected error occurred: {e}")
+    finally:
+        if process:
+            process.terminate()
+
+# --- MAIN APPLICATION & CLI THREAD ---
+
+def run_sentinel_cli():
+    """Handles the main command-line interface for user input."""
+    print("\nSentinel: Greetings, I am your personal defensive agent. How can I assist you?")
+    while True:
+        user_input = input("You > ")
+        if user_input.lower() in ['exit', 'quit']:
+            print("Sentinel: Shutting down.")
+            os._exit(0)
+
+        if user_input.lower().startswith("check_reputation"):
+            parts = user_input.split()
+            if len(parts) < 2:
+                print("Sentinel: Please provide a URL or IP. Usage: check_reputation <indicator>")
+                continue
+            
+            indicator_to_check = parts[1]
+            malicious_count, indicator = investigate_indicator(indicator_to_check)
+            
+            if malicious_count is not None and malicious_count > 0:
+                confirmation = input("\nSentinel: Threat detected. Would you like to block this indicator? (yes/no) > ")
+                if confirmation.lower() == 'yes':
+                    block_indicator(indicator)
+                else:
+                    print("Sentinel: Understood. No action will be taken.")
+                    log_event({"action": "USER_DECLINED_BLOCK", "indicator": indicator})
+        else:
+            print("Sentinel: Processing general query...")
+            response_text = get_generative_analysis(user_input)
+            print(f"Sentinel: {response_text}")
+
+if __name__ == "__main__":
+    # Load the anomaly detection model and its components once at startup
+    try:
+        print("Sentinel: Loading anomaly detection model and preprocessors...")
+        anomaly_model = tf.keras.models.load_model(ANOMALY_MODEL_PATH)
+        # We need to re-initialize the scaler and hasher with dummy data or load saved states
+        # For simplicity and given the FeatureHasher's nature, we will re-fit scaler/hasher on a small dummy data.
+        # In a production system, these would be saved alongside the model.
+        
+        # Re-initialize hasher with dummy values based on expected types
+        dummy_process_names = ["init", "systemd", "cron", "sshd", "python"] # Example common process names
+        anomaly_hasher = FeatureHasher(n_features=ANOMALY_N_FEATURES, input_type='string')
+        anomaly_hasher.fit([[name] for name in dummy_process_names]) # Fit with dummy list of lists
+        
+        # Re-initialize scaler
+        anomaly_scaler = StandardScaler()
+        # Fit scaler with dummy data matching the hashed features' dimensions
+        dummy_hashed_features = anomaly_hasher.transform([[name] for name in dummy_process_names]).toarray()
+        anomaly_scaler.fit(dummy_hashed_features)
+        
+        print("Sentinel: Anomaly model and preprocessors loaded successfully.")
+    except Exception as e:
+        print(f"Sentinel: [ERROR] Failed to load anomaly model or preprocessors: {e}. Anomaly detection will be disabled.")
+        anomaly_model = None # Ensure it's None if loading failed
+
+    # Create and start the proactive monitoring threads
+    suricata_thread = threading.Thread(target=run_suricata_monitor, daemon=True)
+    suricata_thread.start()
+
+    if anomaly_model: # Only start anomaly monitor if model loaded successfully
+        anomaly_thread = threading.Thread(target=run_anomaly_monitor, daemon=True)
+        anomaly_thread.start()
+
+    # Run the CLI in the main thread
+    run_sentinel_cli()
