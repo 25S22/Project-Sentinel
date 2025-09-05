@@ -1,57 +1,76 @@
-## The Definitive Fix: Install Python with pyenv
-Follow these steps exactly. This will give you a clean, working Python 3.11 installation, allowing you to finally move forward.
+Okay, this screenshot gives us a lot of critical information, and it confirms a couple of things:
 
-Step 1: Install pyenv Dependencies
-First, we need to install the libraries that pyenv uses to build Python from source.
+pyenv initial installation issue: The pyenv installer warned you: WARNING: Can not proceed with installation. Kindly remove the '/home/death/.pyenv' directory first. This means the first attempt to install pyenv failed or was incomplete, and it left behind a partial directory.
+
+Shell incompatibility: The source ~/.bashrc command produced a cascade of errors like command not found: shopt and parse error near '&', along with the prompt looking corrupted. This definitively tells me that you are NOT using bash as your default shell; you are using zsh.
+
+This is why some commands aren't working as expected. Many tutorials, including mine, often assume a bash shell unless specified otherwise.
+
+## The Definitive Fix for zsh and pyenv Reinstallation
+We need to properly clean up the failed pyenv installation and then configure it specifically for zsh.
+
+Step 1: Clean Up the Failed pyenv Installation
+First, let's remove the incomplete pyenv directory.
 
 Bash
 
-sudo apt update
-sudo apt install -y build-essential libssl-dev zlib1g-dev libbz2-dev \
-libreadline-dev libsqlite3-dev wget curl llvm libncurses5-dev libncursesw5-dev \
-xz-utils tk-dev libffi-dev liblzma-dev python3-openssl git
-Step 2: Install pyenv Itself
-This command downloads the pyenv installer and runs it. It will install pyenv safely in your home directory.
+rm -rf ~/.pyenv
+Step 2: Reinstall pyenv
+Now, run the pyenv installer again, ensuring a clean start.
 
 Bash
 
 curl https://pyenv.run | bash
-Step 3: Configure Your Shell for pyenv
-After the installation, you must run these commands to set up the necessary environment variables. This tells your terminal how to find and use pyenv.
+Step 3: Configure Your zsh Shell for pyenv
+This is the most crucial step. You need to edit ~/.zshrc (your zsh configuration file) instead of ~/.bashrc.
+
+Open your ~/.zshrc file:
 
 Bash
 
-echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc
-echo 'export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc
-echo -e 'if command -v pyenv 1>/dev/null 2>&1; then\n  eval "$(pyenv init -)"\nfi' >> ~/.bashrc
-Now, close and reopen your terminal for these changes to take effect.
+nano ~/.zshrc
+Now, scroll to the very end of the file and add these lines:
 
-Step 4: Install Python 3.11
-With pyenv installed and configured, you can now install Python 3.11 with a simple command. This will download the Python source code and compile it for you. This may take 5-10 minutes.
+Bash
+
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)" # This line is good practice for pyenv-virtualenv integration
+Press Ctrl+X, then Y, then Enter to save and exit nano.
+
+Step 4: Load the New zsh Configuration
+After modifying ~/.zshrc, you need to either close and reopen your terminal OR explicitly source it:
+
+Bash
+
+source ~/.zshrc
+Your prompt should now look normal, and you should be able to run pyenv commands.
+
+Step 5: Install Python 3.11
+Now, try installing Python 3.11 again. This step will still take some time as pyenv compiles Python.
 
 Bash
 
 pyenv install 3.11.8
-Step 5: Create the New Virtual Environment (The Right Way)
-Now, use the pyenv-managed Python 3.11 to create a new, clean virtual environment.
+Step 6: Create the New Virtual Environment and Install Dependencies
+Once Python 3.11.8 is successfully installed, you can create and activate your new virtual environment and install dependencies:
 
 Bash
 
 # Navigate to your project directory
 cd ~/Desktop/Project-Sentinel
 
-# Use the specific pyenv Python version to create the venv
-~/.pyenv/versions/3.11.8/bin/python -m venv sentinel-env-3.11
-Step 6: Activate and Install Dependencies
-Activate your new, correctly built environment.
+# Create the new environment using pyenv's Python 3.11
+pyenv virtualenv 3.11.8 sentinel-env-3.11
 
-Bash
+# Activate the new environment
+pyenv activate sentinel-env-3.11
+Your prompt should now show (sentinel-env-3.11).
 
-source sentinel-env-3.11/bin/activate
-Your prompt will show (sentinel-env-3.11). Now, reinstall everything.
+Finally, install all project dependencies:
 
 Bash
 
 pip install --upgrade pip
-pip install google-generativeai python-iptables vt-py tensorflow
-You are now, finally, in a stable, correct environment. You can proceed with running python anomaly_detector.py. This method bypasses all the system-level apt issues and is the guaranteed path forward.
+pip install google-generativeai python-iptables vt-py tensorflow pandas scikit-learn
