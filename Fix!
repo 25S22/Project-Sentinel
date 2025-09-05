@@ -1,32 +1,15 @@
-## The Definitive Fix: Manually Disable the Lock File
-Step 1: Find the Lock File's Path
-First, we need the exact path to the lock file within your active virtual environment.
-
-Action: Make sure your (sentinel-env-3.11) environment is active, then run this command:
+Step 2: Create the pip Configuration File
+Run this single, powerful command. It will create a pip.conf file in the correct location within your virtual environment and add the necessary setting to disable the external management check.
 
 Bash
 
-find ~/.pyenv/versions/sentinel-env-3.11 -name "EXTERNALLY-MANAGED"
-This will search for the file and print its full path. It will look something like this:
-/home/death/.pyenv/versions/sentinel-env-3.11/lib/python3.11/EXTERNALLY-MANAGED
-
-Step 2: Disable the Lock File
-Now that you have the path, we will rename the file. This effectively disables it without deleting it, which is a safe practice.
-
-Action: Use the path you just found in the following command. Copy and paste the path carefully.
-
-Bash
-
-# Replace the path with the one you found in Step 1
-mv /home/death/.pyenv/versions/sentinel-env-3.11/lib/python3.11/EXTERNALLY-MANAGED /home/death/.pyenv/versions/sentinel-env-3.11/lib/python3.11/EXTERNALLY-MANAGED.bak
-This command renames the file to EXTERNALLY-MANAGED.bak. Because pip is only looking for the original name, it will no longer find the lock and the error will be gone.
-
+echo -e "[global]\nbreak-system-packages = true" > $(pyenv root)/versions/sentinel-env-3.11/pip.conf
 Step 3: Install Your Dependencies (Finally)
-Now, with the lock disabled, pip will work correctly without any special flags.
+Now, with this configuration file in place, pip will automatically read our override setting. You no longer need any special flags.
 
-Action: Run the standard pip install command.
+Run the standard pip install command:
 
 Bash
 
 pip install google-generativeai python-iptables vt-py tensorflow pandas scikit-learn
-This will now succeed. You have manually overridden the system's aggressive protection within the safe confines of your virtual environment, clearing the final roadblock.
+This will now succeed. You have successfully created a local override that tells pip to ignore the system-level lock, finally clearing the path to install your libraries.
