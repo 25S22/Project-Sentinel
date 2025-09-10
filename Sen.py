@@ -117,7 +117,9 @@ def block_indicator(indicator):
         chain = iptc.Chain(table, "INPUT")
         rule = iptc.Rule()
         rule.src = ip_to_block
-        rule.target = chain.create_target("DROP")
+        # Fixed: Use iptc.Target instead of chain.create_target
+        target = iptc.Target(rule, "DROP")
+        rule.target = target
         chain.insert_rule(rule)
         table.commit()
         table.refresh()
@@ -171,44 +173,86 @@ def run_anomaly_monitor():
     while True:
         try:
             # Get a snapshot of all running processes' data
-            # 'connections' is removed from the attributes list
-            procs_info = [p.info for p in psutil.process_iter(['name', 'username', 'cpu_percent', 'memory_percent', 'num_threads'])]
-            
-            live_df = pd.DataFrame(procs_info).dropna()
+            # Fixed: Added error handling for process data collection to match data_collector.py methodology
+            procs_info = []
+            for proc in psutil.process_iter(['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'num_threads']):
+                try:
+                    proc_data = proc.info
+                    # Ensure all required fields are present and valid (matching data_collector.py structure)
+                    if all(key in proc_data and proc_data[key] is not None for key in ['name', 'username', 'cpu_percent', 'memory_percent', 'num_threads']):
+                        # Convert to match the exact structure used in training data
+                        processed_data = {
+                            'process_name': str(proc_data['name'] if proc_data['name'] else 'unknown'),
+                            'username': str(proc_data['username'] if proc_data['username'] else 'unknown'),
+                            'cpu_percent': float(proc_data['cpu_percent'] if proc_data['cpu_percent'] is not None else 0.0),
+                            'memory_percent': round(float(proc_data['memory_percent'] if proc_data['memory_percent'] is not None else 0.0), 2),
+                            'num_threads': int(proc_data['num_threads'] if proc_data['num_threads'] is not None else 1)
+                        }
+                        
+                        procs_info.append(processed_data)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, ValueError, TypeError):
+                    # Skip processes that can't be accessed or have invalid data
+                    continue
 
+            if not procs_info:
+                print("Sentinel: [ANOMALY MONITOR] No valid process data collected, retrying...")
+                time.sleep(5)
+                continue
+
+            live_df = pd.DataFrame(procs_info)
+
+            # Additional data cleaning
+            live_df = live_df.dropna()
             if live_df.empty:
-                time.sleep(2)
+                print("Sentinel: [ANOMALY MONITOR] No valid data after cleaning, retrying...")
+                time.sleep(5)
                 continue
 
             # Preprocess the live data snapshot
-            categorical_live = live_df[CATEGORICAL_COLS].astype(str).to_dict('records')
-            numerical_live = live_df[NUMERICAL_COLS].values
-            
-            hashed_live = anomaly_hasher.transform(categorical_live)
-            scaled_live = anomaly_scaler.transform(numerical_live)
-            
-            combined_live_features = np.hstack((hashed_live.toarray(), scaled_live))
+            try:
+                categorical_live = live_df[CATEGORICAL_COLS].astype(str).to_dict('records')
+                numerical_live = live_df[NUMERICAL_COLS].values
+                
+                # Ensure numerical data has the correct shape and type
+                if numerical_live.shape[1] != len(NUMERICAL_COLS):
+                    print(f"Sentinel: [ANOMALY MONITOR WARNING] Numerical data shape mismatch: expected {len(NUMERICAL_COLS)}, got {numerical_live.shape[1]}")
+                    continue
+                
+                hashed_live = anomaly_hasher.transform(categorical_live)
+                
+                # Fixed: Ensure we only pass the expected number of features to the scaler
+                if numerical_live.shape[1] != anomaly_scaler.n_features_in_:
+                    print(f"Sentinel: [ANOMALY MONITOR ERROR] Feature count mismatch: scaler expects {anomaly_scaler.n_features_in_} features, got {numerical_live.shape[1]}")
+                    continue
+                
+                scaled_live = anomaly_scaler.transform(numerical_live)
+                
+                combined_live_features = np.hstack((hashed_live.toarray(), scaled_live))
 
-            # Add the current state to our sequence buffer
-            recent_features.extend(combined_live_features)
-            
-            # Trim the buffer to maintain the sequence length
-            while len(recent_features) > TIMESTEPS:
-                recent_features.pop(0)
+                # Add the current state to our sequence buffer
+                recent_features.extend(combined_live_features)
+                
+                # Trim the buffer to maintain the sequence length
+                while len(recent_features) > TIMESTEPS:
+                    recent_features.pop(0)
 
-            # Check for anomaly if we have a full sequence
-            if len(recent_features) == TIMESTEPS:
-                sequence_np = np.array(recent_features).reshape(1, TIMESTEPS, N_FEATURES)
-                reconstruction = anomaly_model.predict(sequence_np, verbose=0)
-                mae_loss = np.mean(np.abs(reconstruction - sequence_np))
+                # Check for anomaly if we have a full sequence
+                if len(recent_features) == TIMESTEPS:
+                    sequence_np = np.array(recent_features).reshape(1, TIMESTEPS, N_FEATURES)
+                    reconstruction = anomaly_model.predict(sequence_np, verbose=0)
+                    mae_loss = np.mean(np.abs(reconstruction - sequence_np))
 
-                if mae_loss > anomaly_threshold:
-                    print(f"\nSentinel: [ANOMALY DETECTED] Reconstruction Error: {mae_loss:.4f} > Threshold: {anomaly_threshold:.4f}")
-                    prompt = f"Investigate a major security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f}). This indicates a coordinated, unusual pattern across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
-                    analysis = get_generative_analysis(prompt)
-                    print("\n--- Anomaly Generative Analysis ---\n" + analysis + "\n-----------------------------------")
-                    log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "details": analysis})
-                    recent_features = [] # Reset after detection
+                    if mae_loss > anomaly_threshold:
+                        print(f"\nSentinel: [ANOMALY DETECTED] Reconstruction Error: {mae_loss:.4f} > Threshold: {anomaly_threshold:.4f}")
+                        prompt = f"Investigate a major security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f}). This indicates a coordinated, unusual pattern across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
+                        analysis = get_generative_analysis(prompt)
+                        print("\n--- Anomaly Generative Analysis ---\n" + analysis + "\n-----------------------------------")
+                        log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "details": analysis})
+                        recent_features = [] # Reset after detection
+
+            except Exception as e:
+                print(f"Sentinel: [ANOMALY MONITOR ERROR] Data processing error: {e}")
+                continue
 
             time.sleep(2)
         except Exception as e:
@@ -219,28 +263,35 @@ def run_anomaly_monitor():
 def run_sentinel_cli():
     print("\nSentinel: Greetings, I am your personal defensive agent. How can I assist you?")
     while True:
-        user_input = input("You > ")
-        if user_input.lower() in ['exit', 'quit']:
-            print("Sentinel: Shutting down.")
+        try:
+            user_input = input("You > ")
+            if user_input.lower() in ['exit', 'quit']:
+                print("Sentinel: Shutting down.")
+                os._exit(0)
+            if user_input.lower().startswith("check_reputation"):
+                parts = user_input.split()
+                if len(parts) < 2:
+                    print("Sentinel: Please provide a URL or IP. Usage: check_reputation <indicator>")
+                    continue
+                indicator_to_check = parts[1]
+                malicious_count, indicator = investigate_indicator(indicator_to_check)
+                if malicious_count is not None and malicious_count > 0:
+                    confirmation = input("\nSentinel: Threat detected. Would you like to block this indicator? (yes/no) > ")
+                    if confirmation.lower() == 'yes':
+                        block_indicator(indicator)
+                    else:
+                        print("Sentinel: Understood. No action will be taken.")
+                        log_event({"action": "USER_DECLINED_BLOCK", "indicator": indicator})
+            else:
+                print("Sentinel: Processing general query...")
+                response_text = get_generative_analysis(user_input)
+                print(f"Sentinel: {response_text}")
+        except KeyboardInterrupt:
+            print("\nSentinel: Shutting down.")
             os._exit(0)
-        if user_input.lower().startswith("check_reputation"):
-            parts = user_input.split()
-            if len(parts) < 2:
-                print("Sentinel: Please provide a URL or IP. Usage: check_reputation <indicator>")
-                continue
-            indicator_to_check = parts[1]
-            malicious_count, indicator = investigate_indicator(indicator_to_check)
-            if malicious_count is not None and malicious_count > 0:
-                confirmation = input("\nSentinel: Threat detected. Would you like to block this indicator? (yes/no) > ")
-                if confirmation.lower() == 'yes':
-                    block_indicator(indicator)
-                else:
-                    print("Sentinel: Understood. No action will be taken.")
-                    log_event({"action": "USER_DECLINED_BLOCK", "indicator": indicator})
-        else:
-            print("Sentinel: Processing general query...")
-            response_text = get_generative_analysis(user_input)
-            print(f"Sentinel: {response_text}")
+        except Exception as e:
+            print(f"Sentinel: [CLI ERROR] An error occurred: {e}")
+            continue
 
 if __name__ == "__main__":
     try:
@@ -250,6 +301,11 @@ if __name__ == "__main__":
         anomaly_hasher = joblib.load(HASHER_PATH)
         with open(THRESHOLD_PATH, 'r') as f:
             anomaly_threshold = float(f.read().strip())
+        
+        # Validate that the scaler expects the correct number of features
+        expected_features = anomaly_scaler.n_features_in_
+        if expected_features != len(NUMERICAL_COLS):
+            print(f"Sentinel: [WARNING] Scaler expects {expected_features} features, but NUMERICAL_COLS has {len(NUMERICAL_COLS)}. This may cause errors.")
         
         if GEMINI_API_KEY and VT_API_KEY:
             genai.configure(api_key=GEMINI_API_KEY)
