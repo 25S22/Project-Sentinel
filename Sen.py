@@ -35,11 +35,18 @@ NUMERICAL_COLS = ['cpu_percent', 'memory_percent', 'num_threads']
 N_HASH_FEATURES = 5
 N_FEATURES = N_HASH_FEATURES + len(NUMERICAL_COLS)
 
+# --- ANOMALY DETECTION SENSITIVITY CONTROL ---
+ANOMALY_BUFFER_MULTIPLIER = 1.5  # Multiply threshold by this factor to reduce false positives
+MIN_ANOMALY_THRESHOLD = 0.3      # Minimum threshold regardless of calculated value
+ANOMALY_COOLDOWN_SECONDS = 30    # Wait time between anomaly alerts to prevent spam
+
 # --- Global variables for the anomaly detection components ---
 anomaly_model = None
 anomaly_scaler = None
 anomaly_hasher = None
 anomaly_threshold = 0.0
+effective_threshold = 0.0  # The actual threshold used after applying buffer
+last_anomaly_time = 0      # Track last anomaly alert time for cooldown
 model = None # Gemini model
 
 # --- HELPER FUNCTIONS & API ---
@@ -163,13 +170,16 @@ def run_suricata_monitor():
 
 # --- ADVANCED ANOMALY MONITOR THREAD ---
 def run_anomaly_monitor():
-    global anomaly_model, anomaly_scaler, anomaly_hasher, anomaly_threshold
+    global anomaly_model, anomaly_scaler, anomaly_hasher, anomaly_threshold, effective_threshold, last_anomaly_time
+    
     if not all([anomaly_model, anomaly_scaler, anomaly_hasher]):
         print("Sentinel: [ANOMALY MONITOR ERROR] Anomaly detection components not fully loaded. Monitor disabled.")
         return
 
-    print("Sentinel: Advanced anomaly monitoring thread started. Watching live system state...")
+    print(f"Sentinel: Advanced anomaly monitoring thread started. Using effective threshold: {effective_threshold:.4f}")
     recent_features = []
+    consecutive_anomalies = 0  # Track consecutive anomalies to detect persistent issues
+    
     while True:
         try:
             # Get a snapshot of all running processes' data
@@ -242,13 +252,41 @@ def run_anomaly_monitor():
                     reconstruction = anomaly_model.predict(sequence_np, verbose=0)
                     mae_loss = np.mean(np.abs(reconstruction - sequence_np))
 
-                    if mae_loss > anomaly_threshold:
-                        print(f"\nSentinel: [ANOMALY DETECTED] Reconstruction Error: {mae_loss:.4f} > Threshold: {anomaly_threshold:.4f}")
-                        prompt = f"Investigate a major security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f}). This indicates a coordinated, unusual pattern across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
-                        analysis = get_generative_analysis(prompt)
-                        print("\n--- Anomaly Generative Analysis ---\n" + analysis + "\n-----------------------------------")
-                        log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "details": analysis})
-                        recent_features = [] # Reset after detection
+                    # Apply improved anomaly detection logic
+                    current_time = time.time()
+                    is_significant_anomaly = mae_loss > effective_threshold
+                    cooldown_passed = (current_time - last_anomaly_time) > ANOMALY_COOLDOWN_SECONDS
+
+                    if is_significant_anomaly:
+                        consecutive_anomalies += 1
+                        
+                        # Only alert if cooldown has passed and this is either:
+                        # 1. The first significant anomaly, OR
+                        # 2. We've had multiple consecutive anomalies (indicating persistent issue)
+                        should_alert = cooldown_passed and (consecutive_anomalies == 1 or consecutive_anomalies >= 3)
+                        
+                        if should_alert:
+                            severity = "HIGH" if mae_loss > (effective_threshold * 2) else "MEDIUM"
+                            print(f"\nSentinel: [ANOMALY DETECTED - {severity}] Reconstruction Error: {mae_loss:.4f} > Threshold: {effective_threshold:.4f}")
+                            print(f"Sentinel: Base threshold was {anomaly_threshold:.4f}, using buffered threshold {effective_threshold:.4f}")
+                            
+                            prompt = f"Investigate a {severity.lower()} security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f} vs threshold: {effective_threshold:.4f}). This indicates unusual patterns across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
+                            analysis = get_generative_analysis(prompt)
+                            print("\n--- Anomaly Generative Analysis ---\n" + analysis + "\n-----------------------------------")
+                            log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "effective_threshold": effective_threshold, "severity": severity, "details": analysis})
+                            
+                            last_anomaly_time = current_time
+                        else:
+                            # Log minor anomalies without alerting
+                            print(f"Sentinel: [DEBUG] Minor anomaly detected ({mae_loss:.4f}) - cooldown active or low consecutive count ({consecutive_anomalies})")
+                    else:
+                        # Reset consecutive counter when back to normal
+                        if consecutive_anomalies > 0:
+                            print(f"Sentinel: [INFO] System behavior normalized (error: {mae_loss:.4f})")
+                            consecutive_anomalies = 0
+                    
+                    # Always trim the recent_features buffer to maintain sliding window
+                    recent_features.pop(0)  # Remove oldest instead of clearing all
 
             except Exception as e:
                 print(f"Sentinel: [ANOMALY MONITOR ERROR] Data processing error: {e}")
@@ -325,7 +363,7 @@ if __name__ == "__main__":
         else:
             print("Sentinel: [WARNING] API keys not found. OSINT and generative analysis will be disabled.")
 
-        print(f"Sentinel: Advanced model and preprocessors loaded. Threshold set to {anomaly_threshold:.4f}.")
+        print(f"Sentinel: Advanced model and preprocessors loaded. Effective threshold set to {effective_threshold:.4f}.")
     except Exception as e:
         print(f"Sentinel: [ERROR] Failed to load components: {e}. Anomaly detection will be disabled.")
         anomaly_model = None
