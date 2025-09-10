@@ -307,6 +307,17 @@ if __name__ == "__main__":
         if expected_features != len(NUMERICAL_COLS):
             print(f"Sentinel: [WARNING] Scaler expects {expected_features} features, but NUMERICAL_COLS has {len(NUMERICAL_COLS)}. This may cause errors.")
         
+        # Calculate effective threshold with buffer to reduce false positives
+        base_threshold = anomaly_threshold
+        buffered_threshold = base_threshold * ANOMALY_BUFFER_MULTIPLIER
+        effective_threshold = max(buffered_threshold, MIN_ANOMALY_THRESHOLD)
+        
+        print(f"Sentinel: Threshold Configuration:")
+        print(f"  - Base threshold (from training): {base_threshold:.4f}")
+        print(f"  - Buffered threshold (x{ANOMALY_BUFFER_MULTIPLIER}): {buffered_threshold:.4f}")
+        print(f"  - Effective threshold (final): {effective_threshold:.4f}")
+        print(f"  - Minimum threshold: {MIN_ANOMALY_THRESHOLD}")
+        
         if GEMINI_API_KEY and VT_API_KEY:
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel('gemini-1.5-flash')
