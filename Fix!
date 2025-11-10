@@ -1,3 +1,4 @@
+yara -s test.yar /path/to/suspicious/file
 This is incredibly frustrating, and you've hit one of the most difficult and deep-seated issues that can happen on a highly-customized Linux system like Kali. The problem is that the system's own Python configuration is so aggressive that it's overriding every attempt we make to isolate our project, even inside a virtual environment.
 
 Let's stop fighting the system. We will go around it completely using a more powerful tool designed for exactly this kind of problem: Miniconda.
