@@ -28,6 +28,9 @@ VT_API_KEY = os.getenv("VT_API_KEY")
 LOG_FILE_PATH = "sentinel_audit.log"
 SURICATA_LOG_PATH = "/var/log/suricata/eve.json"
 
+# --- NEW: SURICATA ALERT COOLDOWN ---
+SURICATA_COOLDOWN = 300 # 300 seconds = 5 minutes
+
 # --- MODEL CONFIGURATION ---
 FLASH_MODEL_NAME = "gemini-1.5-flash"
 PRO_MODEL_NAME = "gemini-1.5-pro"
@@ -66,9 +69,22 @@ last_anomaly_time = 0
 model = None # Global model for "Quick Search"
 
 # --- RAG CHAT HISTORY ---
-rag_chat_history = [] # This will store the last 2 Q/A pairs
+rag_chat_history = [] # Memory for the 'ask' command
+
+# --- GENERAL CHAT HISTORY ---
+general_chat_history = [] # Memory for the general Quick/Deep Search
 
 # --- HELPER FUNCTIONS & API ---
+def _format_general_history(history):
+    """Helper function to format the general history list into a string."""
+    if not history:
+        return "No previous conversation history."
+    
+    formatted = ""
+    for q, a in history:
+        formatted += f"User: {q}\nSentinel: {a}\n---\n"
+    return formatted
+
 def log_event(data):
     try:
         with open(LOG_FILE_PATH, 'a') as log_file:
@@ -221,7 +237,7 @@ def investigate_hash(file_hash, source="MANUAL_INPUT"):
 
 def block_indicator(indicator, is_permanent=True):
     try:
-        is_ip = all(c in "0123456789." for c in indicator)
+        is_ip = all(c in "012356789." for c in indicator) # Fixed typo here
         ip_to_block = indicator if is_ip else socket.gethostbyname(urlparse(f'//{indicator}' if '://' not in indicator else indicator).hostname)
         
         block_type = "PERMANENT" if is_permanent else "TEMPORARY"
@@ -415,6 +431,12 @@ def hunt_threat(indicator):
 # --- SURICATA MONITOR THREAD ---
 def run_suricata_monitor():
     print("Sentinel: Suricata monitoring thread started. Watching logs...")
+    
+    # --- NEW: Cooldown dictionary ---
+    # Key: alert_signature, Value: last_alert_timestamp
+    alert_cooldowns = {}
+    # --- END NEW ---
+    
     try:
         with open(SURICATA_LOG_PATH, 'r') as log_file:
             log_file.seek(0, 2)
@@ -428,6 +450,19 @@ def run_suricata_monitor():
                             dest_ip = alert.get('dest_ip')
                             signature = alert.get('alert', {}).get('signature')
                             severity = alert.get('alert', {}).get('severity')
+                            
+                            # --- NEW: Cooldown Logic ---
+                            current_time = time.time()
+                            last_alert_time = alert_cooldowns.get(signature, 0) # Default to 0
+                            
+                            if (current_time - last_alert_time) < SURICATA_COOLDOWN:
+                                # Still in cooldown, print a debug message and skip
+                                print(f"Sentinel: [COOLDOWN] Suppressing repeated alert for 5 mins: {signature}")
+                                continue # Skip all processing for this alert
+                            
+                            # Not in cooldown, update the timestamp and proceed with logic
+                            alert_cooldowns[signature] = current_time
+                            # --- END NEW: Cooldown Logic ---
                             
                             print(f"\nSentinel: [SURICATA ALERT] Severity: {severity} | {signature} | From: {src_ip} -> To: {dest_ip}")
                             
@@ -647,6 +682,7 @@ def run_anomaly_monitor():
 # --- MAIN APPLICATION & CLI THREAD ---
 def run_sentinel_cli():
     global rag_chat_history # Make chat history accessible
+    global general_chat_history # Make general history accessible
     
     print("\nSentinel: Greetings, I am your personal defensive agent. How can I assist you?")
     while True:
@@ -708,24 +744,54 @@ def run_sentinel_cli():
 
             elif user_input.lower() == "clear_history":
                 rag_chat_history = []
-                print("Sentinel: (KB) Chat history has been cleared.")
+                general_chat_history = [] # Clear general history too
+                print("Sentinel: (KB) and (General) Chat history has been cleared.")
             # --- END RAG CLI COMMANDS ---
             
             else:
+                # --- GENERAL CHAT (with memory) ---
                 query_length = len(user_input)
                 
+                # Build the conversational prompt
+                history_context = _format_general_history(general_chat_history)
+                conversational_prompt = f"""You are Sentinel, a helpful AI agent.
+Use the Chat History to understand the context of the user's Latest Question.
+
+---
+Chat History:
+{history_context}
+---
+
+Latest Question:
+{user_input}
+
+Answer:"""
+
                 if query_length > PRO_QUERY_THRESHOLD:
                     print(f"Sentinel: Processing complex query (length {query_length}) with Deep Search...")
                     try:
                         pro_model_instance = genai.GenerativeModel(PRO_MODEL_NAME)
-                        response = pro_model_instance.generate_content(user_input)
-                        print(f"Sentinel: {response.text}")
+                        response = pro_model_instance.generate_content(conversational_prompt)
+                        answer = response.text
+                        print(f"Sentinel: {answer}")
+                        
+                        # Save to general history
+                        general_chat_history.append((user_input, answer))
+                        if len(general_chat_history) > 2:
+                            general_chat_history.pop(0)
+                            
                     except Exception as e:
                         print(f"Sentinel: [Analysis Error: Could not process Deep Search request. Reason: {e}]")
                 else:
                     print(f"Sentinel: Processing fast query (length {query_length}) with Quick Search...")
-                    response_text = get_generative_analysis(user_input, target_model=model)
-                    print(f"Sentinel: {response_text}")
+                    answer = get_generative_analysis(conversational_prompt, target_model=model)
+                    print(f"Sentinel: {answer}")
+                    
+                    # Save to general history
+                    general_chat_history.append((user_input, answer))
+                    if len(general_chat_history) > 2:
+                        general_chat_history.pop(0)
+                # --- END GENERAL CHAT ---
                 
         except KeyboardInterrupt:
             print("\nSentinel: Shutting down.")
