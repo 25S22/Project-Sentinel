@@ -16,9 +16,11 @@ import psutil # Used for live data collection
 import joblib
 import hashlib
 
-# --- MCTS INTEGRATION ---
-import mcts_module # Import the new MCTS logic file
-# --- END MCTS INTEGRATION ---
+# --- MODULE INTEGRATION ---
+import rag_module    # For RAG + Chat History
+import mcts_module   # For MCTS decision making
+import chromadb      # For the RAG vector database
+# --- END MODULE INTEGRATION ---
 
 # --- CONFIGURATION ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -27,9 +29,9 @@ LOG_FILE_PATH = "sentinel_audit.log"
 SURICATA_LOG_PATH = "/var/log/suricata/eve.json"
 
 # --- MODEL CONFIGURATION ---
-FLASH_MODEL_NAME = "gemini-2.5-flash"
-PRO_MODEL_NAME = "gemini-2.5-pro"
-PRO_QUERY_THRESHOLD = 150
+FLASH_MODEL_NAME = "gemini-1.5-flash"
+PRO_MODEL_NAME = "gemini-1.5-pro"
+PRO_QUERY_THRESHOLD = 100
 
 # --- ANOMALY DETECTION FILE PATHS ---
 ANOMALY_MODEL_PATH = "lstm_autoencoder.keras"
@@ -49,6 +51,11 @@ ANOMALY_BUFFER_MULTIPLIER = 1.5
 MIN_ANOMALY_THRESHOLD = 0.3
 ANOMALY_COOLDOWN_SECONDS = 30
 
+# --- RAG CONFIGURATION ---
+CHROMA_DB_PATH = "./chroma_db"
+COLLECTION_NAME = "sentinel_kb"
+EMBEDDING_MODEL = "models/text-embedding-004"
+
 # --- Global variables ---
 anomaly_model = None
 anomaly_scaler = None
@@ -56,7 +63,10 @@ anomaly_hasher = None
 anomaly_threshold = 0.0
 effective_threshold = 0.0
 last_anomaly_time = 0
-model = None
+model = None # Global model for "Quick Search"
+
+# --- RAG CHAT HISTORY ---
+rag_chat_history = [] # This will store the last 2 Q/A pairs
 
 # --- HELPER FUNCTIONS & API ---
 def log_event(data):
@@ -68,6 +78,7 @@ def log_event(data):
         print(f"\nSentinel: [ERROR] Failed to write to log file: {e}")
 
 def get_generative_analysis(prompt, target_model=None):
+    """ The core LLM query function used by all other modules. """
     active_model = target_model if target_model else model
     if not active_model:
         return "[Analysis Error: Generative model not configured.]"
@@ -247,7 +258,7 @@ def block_indicator(indicator, is_permanent=True):
             log_event({"action": "BLOCK_IP_EXCEPTION", "details": msg})
         return False
 
-# --- LOGIC UPDATE: Re-added timed unblock functions ---
+# --- INTELLIGENT BLOCKING: Timed unblock functions ---
 def unblock_ip(ip_to_unblock):
     """ Helper function to remove a DROP rule for a specific IP. """
     try:
@@ -289,10 +300,10 @@ def apply_temporary_block(ip_address, duration_seconds):
         unblock_timer.start()
         
         print(f"Sentinel: {ip_address} will be unblocked in {duration_seconds} seconds.")
-# --- END LOGIC UPDATE ---
+# --- END INTELLIGENT BLOCKING ---
 
 
-# --- NEW CREATIVE FUNCTION ---
+# --- THREAT HUNTING FUNCTION ---
 def get_hash_of_file(filepath):
     """Helper to get SHA256 hash of a file."""
     sha256 = hashlib.sha256()
@@ -398,7 +409,7 @@ def hunt_threat(indicator):
         hunt_by_ip(ip_address)
     except socket.error:
         print(f"Sentinel: [HUNT] Could not resolve domain {indicator}. Hunt aborted.")
-# --- END NEW CREATIVE FUNCTION ---
+# --- END THREAT HUNTING FUNCTION ---
 
 
 # --- SURICATA MONITOR THREAD ---
@@ -431,10 +442,10 @@ def run_suricata_monitor():
                                     'severity': severity
                                 }
                                 
-                                # MCTS runs *fast* to get a recommendation (e.g., "block_ip_temp")
+                                # MCTS runs *fast* to get a recommendation
                                 best_move, predicted_moves = mcts_module.get_best_defensive_action(initial_state)
                                 
-                                # --- LOGIC UPDATE: Intelligent action block ---
+                                # --- INTELLIGENT BLOCKING LOGIC ---
                                 print("\n" + "="*50)
                                 if "block_ip" in best_move:
                                     print(f"Sentinel: MCTS recommends block for {src_ip}. Cross-checking reputation...")
@@ -454,7 +465,7 @@ def run_suricata_monitor():
                                     # Handle other non-block actions from MCTS
                                     print(f"🛡️  ACTION RECOMMENDED: {best_move}. (No automated execution configured for this action).")
                                 print("="*50)
-                                # --- END LOGIC UPDATE ---
+                                # --- END INTELLIGENT BLOCKING LOGIC ---
                                 
                                 log_event({
                                     "action": "MCTS_RESPONSE_NETWORK",
@@ -561,7 +572,7 @@ def run_anomaly_monitor():
                             
                             last_anomaly_time = current_time
                             
-                            # MCTS runs FIRST
+                            # --- MCTS-FIRST LOGIC ---
                             print(f"Sentinel: [MCTS TRIGGER] High severity host anomaly detected. Initiating MCTS.")
                             
                             suspicious_proc_name = "unknown"
@@ -605,7 +616,7 @@ def run_anomaly_monitor():
                                 "predicted_attacker_moves": predicted_moves
                             })
                             
-                            # Generative analysis runs AFTER
+                            # --- ANALYSIS-SECOND LOGIC ---
                             print(f"Sentinel: Performing follow-up analysis on anomaly...")
                             prompt = f"Investigate a {severity.lower()} security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f} vs threshold: {effective_threshold:.4f}). This indicates unusual patterns across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
                             
@@ -613,6 +624,7 @@ def run_anomaly_monitor():
                             print("\n--- Anomaly Analysis ---\n" + analysis + "\n-----------------------------------")
                             
                             log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "effective_threshold": effective_threshold, "severity": severity, "details": analysis})
+                            # --- END MCTS-FIRST LOGIC ---
                             
                         else:
                             print(f"Sentinel: [DEBUG] Minor anomaly detected ({mae_loss:.4f}) - cooldown active or low consecutive count ({consecutive_anomalies})")
@@ -634,6 +646,8 @@ def run_anomaly_monitor():
 
 # --- MAIN APPLICATION & CLI THREAD ---
 def run_sentinel_cli():
+    global rag_chat_history # Make chat history accessible
+    
     print("\nSentinel: Greetings, I am your personal defensive agent. How can I assist you?")
     while True:
         try:
@@ -652,7 +666,7 @@ def run_sentinel_cli():
                 if malicious_count is not None and malicious_count > 0:
                     confirmation = input("\nSentinel: Threat detected. Would you like to block this indicator? (yes/no) > ")
                     if confirmation.lower() == 'yes':
-                        block_indicator(indicator, is_permanent=True) # This is permanent, as requested
+                        block_indicator(indicator, is_permanent=True) # Permanent block
                     else:
                         print("Sentinel: Understood. No action will be taken.")
                         log_event({"action": "USER_DECLINED_BLOCK", "indicator": indicator})
@@ -672,6 +686,30 @@ def run_sentinel_cli():
                     continue
                 indicator_to_hunt = parts[1]
                 hunt_threat(indicator_to_hunt)
+            
+            # --- RAG CLI COMMANDS ---
+            elif user_input.lower().startswith("ask"):
+                question = " ".join(user_input.split()[1:])
+                if not question:
+                    print("Sentinel: Please provide a question. Usage: ask <your question>")
+                    continue
+                
+                # Pass the question, history, and the LLM function to the module
+                answer = rag_module.run_rag_query(question, rag_chat_history, get_generative_analysis)
+                
+                print(f"Sentinel (KB): {answer}")
+                
+                # Add this new Q/A pair to the history
+                rag_chat_history.append((question, answer))
+                
+                # Keep only the last 2 pairs
+                if len(rag_chat_history) > 2:
+                    rag_chat_history.pop(0)
+
+            elif user_input.lower() == "clear_history":
+                rag_chat_history = []
+                print("Sentinel: (KB) Chat history has been cleared.")
+            # --- END RAG CLI COMMANDS ---
             
             else:
                 query_length = len(user_input)
