@@ -109,20 +109,14 @@ def investigate_indicator(indicator, source="MANUAL_INPUT"):
     
     print(f"\nSentinel: Performing Quick Search analysis...")
 
-    # --- LOGIC FIX ---
-    # We now generate a prompt for *both* cases
     analysis_prompt = None
     
     if malicious_count > 0:
-        # Prompt for malicious indicators
         analysis_prompt = f"Analyze the indicator '{indicator}' (Type: {indicator_type}).\n\n1. **Overview:** Briefly describe its identity (e.g., website purpose, IP owner).\n\n2. **Threat Analysis:** It was flagged with {malicious_count} malicious detections. Detail the likely threats (phishing, malware, scam, etc.) and risks."
     else:
-        # NEW Prompt for "clean" indicators, per user request
         analysis_prompt = f"Analyze the indicator '{indicator}' (Type: {indicator_type}).\n\n1. **Overview:** It was found 'clean' by VirusTotal ({malicious_count} detections). Briefly describe its identity (e.g., website purpose, IP owner, 'parked domain').\n\n2. **Security Vetting:** From a security analyst's perspective, are there any *potential* non-malware risks? (e.g., Is it a new domain? Does it have a history of phishing? Does it use excessive trackers? Is it a URL shortener?)"
     
-    # Now, the generative analysis call happens for *both* cases
     analysis_text = get_generative_analysis(analysis_prompt)
-    # --- END LOGIC FIX ---
     
     print("\n--- Sentinel Analysis ---\n" + analysis_text + "\n---------------------------")
     print(f"--- [ END INVESTIGATION ] ---\n")
@@ -201,20 +195,14 @@ def investigate_hash(file_hash, source="MANUAL_INPUT"):
     
     print(f"\nSentinel: Performing Quick Search analysis...")
     
-    # --- LOGIC FIX ---
-    # We now generate a prompt for *both* cases
     analysis_prompt = None
     
     if malicious_count > 0:
-        # Prompt for malicious hashes
         analysis_prompt = f"Analyze the file hash '{file_hash}'.\n\n1. **File Name(s):** {file_name}\n\n2. **Threat Analysis:** It was flagged with {malicious_count} malicious detections. Detail the likely malware family (e.g., WannaCry, Emotet), threats (ransomware, trojan, keylogger, etc.), and associated risks."
     else:
-        # NEW Prompt for "clean" hashes
         analysis_prompt = f"Analyze the file hash '{file_hash}'.\n\n1. **File Name(s):** {file_name}\n\n2. **Analysis:** It was found 'clean' by VirusTotal ({malicious_count} detections). What is this file? Is it a known-good system file (e.g., part of Windows)? A common library? Or is it an unknown file?"
     
-    # Call analysis for both cases
     analysis_text = get_generative_analysis(analysis_prompt)
-    # --- END LOGIC FIX ---
     
     print("\n--- Sentinel Analysis ---\n" + analysis_text + "\n---------------------------")
     print(f"--- [ END HASH INVESTIGATION ] ---\n")
@@ -259,7 +247,7 @@ def block_indicator(indicator, is_permanent=True):
             log_event({"action": "BLOCK_IP_EXCEPTION", "details": msg})
         return False
 
-# --- MCTS INTEGRATION ---
+# --- LOGIC UPDATE: Re-added timed unblock functions ---
 def unblock_ip(ip_to_unblock):
     """ Helper function to remove a DROP rule for a specific IP. """
     try:
@@ -295,12 +283,13 @@ def apply_temporary_block(ip_address, duration_seconds):
     Applies a temporary block and schedules its removal.
     """
     if block_indicator(ip_address, is_permanent=False):
+        # If block was successful, start a timer to remove it
         unblock_timer = threading.Timer(duration_seconds, unblock_ip, args=[ip_address])
-        unblock_timer.daemon = True
+        unblock_timer.daemon = True # Ensure timer doesn't block program exit
         unblock_timer.start()
         
         print(f"Sentinel: {ip_address} will be unblocked in {duration_seconds} seconds.")
-# --- END MCTS INTEGRATION ---
+# --- END LOGIC UPDATE ---
 
 
 # --- NEW CREATIVE FUNCTION ---
@@ -442,18 +431,30 @@ def run_suricata_monitor():
                                     'severity': severity
                                 }
                                 
+                                # MCTS runs *fast* to get a recommendation (e.g., "block_ip_temp")
                                 best_move, predicted_moves = mcts_module.get_best_defensive_action(initial_state)
                                 
+                                # --- LOGIC UPDATE: Intelligent action block ---
                                 print("\n" + "="*50)
-                                if "block_ip_temp" in best_move:
-                                    print(f"🛡️  ACTION EXECUTED: Activity from {src_ip} is restricted for the next 10 seconds.")
-                                    apply_temporary_block(src_ip, 10)
-                                elif "block_ip_perm" in best_move:
-                                    print(f"🛡️  ACTION EXECUTED: Permanently blocking {src_ip}.")
-                                    block_indicator(src_ip, is_permanent=True)
+                                if "block_ip" in best_move:
+                                    print(f"Sentinel: MCTS recommends block for {src_ip}. Cross-checking reputation...")
+                                    vt_result = check_virustotal_indicator(src_ip)
+                                    malicious_count = vt_result.get('malicious_vendors', 0)
+                                    
+                                    if malicious_count > 0:
+                                        print(f"Sentinel: [!] Reputation is MALICIOUS ({malicious_count} vendors). Escalating to PERMANENT block.")
+                                        block_indicator(src_ip, is_permanent=True)
+                                        print(f"🛡️  ACTION EXECUTED: Permanently blocking {src_ip}.")
+                                    else:
+                                        print(f"Sentinel: Reputation is CLEAN. Applying TEMPORARY 10-second block as recommended.")
+                                        apply_temporary_block(src_ip, 10) # This function now handles the timer
+                                        print(f"🛡️  ACTION RESTRICTED: Activity from {src_ip} is restricted for the next 10 seconds.")
+                                
                                 else:
+                                    # Handle other non-block actions from MCTS
                                     print(f"🛡️  ACTION RECOMMENDED: {best_move}. (No automated execution configured for this action).")
                                 print("="*50)
+                                # --- END LOGIC UPDATE ---
                                 
                                 log_event({
                                     "action": "MCTS_RESPONSE_NETWORK",
@@ -558,16 +559,9 @@ def run_anomaly_monitor():
                             print(f"\nSentinel: [ANOMALY DETECTED - {severity}] Reconstruction Error: {mae_loss:.4f} > Threshold: {effective_threshold:.4f}")
                             print(f"Sentinel: Base threshold was {anomaly_threshold:.4f}, using buffered threshold {effective_threshold:.4f}")
                             
-                            prompt = f"Investigate a {severity.lower()} security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f} vs threshold: {effective_threshold:.4f}). This indicates unusual patterns across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
-                            
-                            analysis = get_generative_analysis(prompt)
-                            print("\n--- Anomaly Analysis ---\n" + analysis + "\n-----------------------------------")
-                            
-                            log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "effective_threshold": effective_threshold, "severity": severity, "details": analysis})
-                            
                             last_anomaly_time = current_time
                             
-                            # --- MCTS TRIGGER ---
+                            # MCTS runs FIRST
                             print(f"Sentinel: [MCTS TRIGGER] High severity host anomaly detected. Initiating MCTS.")
                             
                             suspicious_proc_name = "unknown"
@@ -576,7 +570,7 @@ def run_anomaly_monitor():
                                 last_anomalous_df['anomaly_score'] = last_anomalous_df['cpu_percent'] + last_anomalous_df['memory_percent']
                                 most_suspicious = last_anomalous_df.loc[last_anomalous_df['anomaly_score'].idxmax()]
                                 suspicious_proc_name = most_suspicious['process_name']
-                                suspicious_pid = int(most_suspicious['pid']) # Ensure it's an int
+                                suspicious_pid = int(most_suspicious['pid'])
                                 print(f"Sentinel: [MCTS] Identified most anomalous process: {suspicious_proc_name} (PID: {suspicious_pid})")
 
                             initial_state = {
@@ -610,7 +604,15 @@ def run_anomaly_monitor():
                                 "best_move": best_move,
                                 "predicted_attacker_moves": predicted_moves
                             })
-                            # --- END MCTS TRIGGER ---
+                            
+                            # Generative analysis runs AFTER
+                            print(f"Sentinel: Performing follow-up analysis on anomaly...")
+                            prompt = f"Investigate a {severity.lower()} security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f} vs threshold: {effective_threshold:.4f}). This indicates unusual patterns across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
+                            
+                            analysis = get_generative_analysis(prompt)
+                            print("\n--- Anomaly Analysis ---\n" + analysis + "\n-----------------------------------")
+                            
+                            log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "effective_threshold": effective_threshold, "severity": severity, "details": analysis})
                             
                         else:
                             print(f"Sentinel: [DEBUG] Minor anomaly detected ({mae_loss:.4f}) - cooldown active or low consecutive count ({consecutive_anomalies})")
@@ -650,7 +652,7 @@ def run_sentinel_cli():
                 if malicious_count is not None and malicious_count > 0:
                     confirmation = input("\nSentinel: Threat detected. Would you like to block this indicator? (yes/no) > ")
                     if confirmation.lower() == 'yes':
-                        block_indicator(indicator, is_permanent=True)
+                        block_indicator(indicator, is_permanent=True) # This is permanent, as requested
                     else:
                         print("Sentinel: Understood. No action will be taken.")
                         log_event({"action": "USER_DECLINED_BLOCK", "indicator": indicator})
@@ -698,7 +700,7 @@ if __name__ == "__main__":
     try:
         print("Sentinel: Loading anomaly detection model and preprocessors...")
         anomaly_model = tf.keras.models.load_model(ANOMALY_MODEL_PATH, compile=False)
-        anomaly_scaler = joblib.load(SCALER_PATH)
+        anomaly_scaler = joblib.load(SCALER_PATH) # Fixed typo
         anomaly_hasher = joblib.load(HASHER_PATH)
         with open(THRESHOLD_PATH, 'r') as f:
             anomaly_threshold = float(f.read().strip())
