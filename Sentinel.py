@@ -14,7 +14,7 @@ import pandas as pd
 import tensorflow as tf
 import psutil # Used for live data collection
 import joblib
-import hashlib # --- NEW: Added for file hashing in hunt_threat ---
+import hashlib
 
 # --- MCTS INTEGRATION ---
 import mcts_module # Import the new MCTS logic file
@@ -27,9 +27,9 @@ LOG_FILE_PATH = "sentinel_audit.log"
 SURICATA_LOG_PATH = "/var/log/suricata/eve.json"
 
 # --- MODEL CONFIGURATION ---
-FLASH_MODEL_NAME = "gemini-2.5-flash"
-PRO_MODEL_NAME = "gemini-2.5-pro"
-PRO_QUERY_THRESHOLD = 150
+FLASH_MODEL_NAME = "gemini-1.5-flash"
+PRO_MODEL_NAME = "gemini-1.5-pro"
+PRO_QUERY_THRESHOLD = 100
 
 # --- ANOMALY DETECTION FILE PATHS ---
 ANOMALY_MODEL_PATH = "lstm_autoencoder.keras"
@@ -107,27 +107,27 @@ def investigate_indicator(indicator, source="MANUAL_INPUT"):
     indicator_type = vt_result.get('type', 'Unknown')
     print(f"Sentinel: OSINT complete. ({indicator_type}) VirusTotal reports {malicious_count} malicious detections.")
     
-    # --- BRANDING CHANGE ---
     print(f"\nSentinel: Performing Quick Search analysis...")
-    # --- END BRANDING CHANGE ---
 
+    # --- LOGIC FIX ---
+    # We now generate a prompt for *both* cases
     analysis_prompt = None
-    analysis_text = None
-
+    
     if malicious_count > 0:
+        # Prompt for malicious indicators
         analysis_prompt = f"Analyze the indicator '{indicator}' (Type: {indicator_type}).\n\n1. **Overview:** Briefly describe its identity (e.g., website purpose, IP owner).\n\n2. **Threat Analysis:** It was flagged with {malicious_count} malicious detections. Detail the likely threats (phishing, malware, scam, etc.) and risks."
     else:
-        analysis_text = f"Indicator '{indicator}' (Type: {indicator_type}) appears benign. OSINT analysis found {malicious_count} malicious detections."
+        # NEW Prompt for "clean" indicators, per user request
+        analysis_prompt = f"Analyze the indicator '{indicator}' (Type: {indicator_type}).\n\n1. **Overview:** It was found 'clean' by VirusTotal ({malicious_count} detections). Briefly describe its identity (e.g., website purpose, IP owner, 'parked domain').\n\n2. **Security Vetting:** From a security analyst's perspective, are there any *potential* non-malware risks? (e.g., Is it a new domain? Does it have a history of phishing? Does it use excessive trackers? Is it a URL shortener?)"
     
-    if analysis_prompt:
-        analysis_text = get_generative_analysis(analysis_prompt)
+    # Now, the generative analysis call happens for *both* cases
+    analysis_text = get_generative_analysis(analysis_prompt)
+    # --- END LOGIC FIX ---
     
-    # --- BRANDING CHANGE ---
     print("\n--- Sentinel Analysis ---\n" + analysis_text + "\n---------------------------")
-    # --- END BRANDING CHANGE ---
-    
     print(f"--- [ END INVESTIGATION ] ---\n")
     return malicious_count, indicator
+
 
 def check_virustotal_indicator(indicator):
     if not VT_API_KEY:
@@ -199,26 +199,26 @@ def investigate_hash(file_hash, source="MANUAL_INPUT"):
     file_name = vt_result.get('name', 'N/A')
     print(f"Sentinel: OSINT complete. File ({file_name}) has {malicious_count} malicious detections.")
     
-    # --- BRANDING CHANGE ---
     print(f"\nSentinel: Performing Quick Search analysis...")
-    # --- END BRANDING CHANGE ---
     
+    # --- LOGIC FIX ---
+    # We now generate a prompt for *both* cases
     analysis_prompt = None
-    analysis_text = None
-
+    
     if malicious_count > 0:
+        # Prompt for malicious hashes
         analysis_prompt = f"Analyze the file hash '{file_hash}'.\n\n1. **File Name(s):** {file_name}\n\n2. **Threat Analysis:** It was flagged with {malicious_count} malicious detections. Detail the likely malware family (e.g., WannaCry, Emotet), threats (ransomware, trojan, keylogger, etc.), and associated risks."
     else:
-        analysis_text = f"File hash '{file_hash}' ({file_name}) appears benign. OSINT analysis found {malicious_count} malicious detections."
+        # NEW Prompt for "clean" hashes
+        analysis_prompt = f"Analyze the file hash '{file_hash}'.\n\n1. **File Name(s):** {file_name}\n\n2. **Analysis:** It was found 'clean' by VirusTotal ({malicious_count} detections). What is this file? Is it a known-good system file (e.g., part of Windows)? A common library? Or is it an unknown file?"
     
-    if analysis_prompt:
-        analysis_text = get_generative_analysis(analysis_prompt)
+    # Call analysis for both cases
+    analysis_text = get_generative_analysis(analysis_prompt)
+    # --- END LOGIC FIX ---
     
-    # --- BRANDING CHANGE ---
     print("\n--- Sentinel Analysis ---\n" + analysis_text + "\n---------------------------")
-    # --- END BRANDING CHANGE ---
-    
     print(f"--- [ END HASH INVESTIGATION ] ---\n")
+
 
 def block_indicator(indicator, is_permanent=True):
     try:
@@ -560,10 +560,8 @@ def run_anomaly_monitor():
                             
                             prompt = f"Investigate a {severity.lower()} security anomaly. System behavior deviated significantly from the norm (reconstruction error: {mae_loss:.4f} vs threshold: {effective_threshold:.4f}). This indicates unusual patterns across multiple system processes. Analyze potential threats like malware, rootkits, or resource abuse and suggest immediate response steps for a sysadmin."
                             
-                            # --- BRANDING CHANGE ---
                             analysis = get_generative_analysis(prompt)
                             print("\n--- Anomaly Analysis ---\n" + analysis + "\n-----------------------------------")
-                            # --- END BRANDING CHANGE ---
                             
                             log_event({"action": "ANOMALY_DETECTED", "loss": mae_loss, "effective_threshold": effective_threshold, "severity": severity, "details": analysis})
                             
@@ -665,7 +663,6 @@ def run_sentinel_cli():
                 hash_to_check = parts[1]
                 investigate_hash(hash_to_check)
             
-            # --- NEW CREATIVE FUNCTION ---
             elif user_input.lower().startswith("hunt_threat"):
                 parts = user_input.split()
                 if len(parts) < 2:
@@ -673,12 +670,10 @@ def run_sentinel_cli():
                     continue
                 indicator_to_hunt = parts[1]
                 hunt_threat(indicator_to_hunt)
-            # --- END NEW CREATIVE FUNCTION ---
             
             else:
                 query_length = len(user_input)
                 
-                # --- BRANDING CHANGE ---
                 if query_length > PRO_QUERY_THRESHOLD:
                     print(f"Sentinel: Processing complex query (length {query_length}) with Deep Search...")
                     try:
@@ -691,7 +686,6 @@ def run_sentinel_cli():
                     print(f"Sentinel: Processing fast query (length {query_length}) with Quick Search...")
                     response_text = get_generative_analysis(user_input, target_model=model)
                     print(f"Sentinel: {response_text}")
-                # --- END BRANDING CHANGE ---
                 
         except KeyboardInterrupt:
             print("\nSentinel: Shutting down.")
@@ -727,10 +721,8 @@ if __name__ == "__main__":
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel(FLASH_MODEL_NAME)
             print(f"Sentinel: Online analysis tools configured.")
-            # --- BRANDING CHANGE ---
             print(f"  - Default (Quick Search) model: {FLASH_MODEL_NAME}")
             print(f"  - On-demand (Deep Search) model: {PRO_MODEL_NAME}")
-            # --- END BRANDING CHANGE ---
         else:
             print("Sentinel: [WARNING] API keys not found. OSINT and analysis will be disabled.")
 
