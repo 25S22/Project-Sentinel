@@ -27,9 +27,9 @@ LOG_FILE_PATH = "sentinel_audit.log"
 SURICATA_LOG_PATH = "/var/log/suricata/eve.json"
 
 # --- MODEL CONFIGURATION ---
-FLASH_MODEL_NAME = "gemini-1.5-flash"
-PRO_MODEL_NAME = "gemini-1.5-pro"
-PRO_QUERY_THRESHOLD = 100
+FLASH_MODEL_NAME = "gemini-2.5-flash"
+PRO_MODEL_NAME = "gemini-2.5-pro"
+PRO_QUERY_THRESHOLD = 150
 
 # --- ANOMALY DETECTION FILE PATHS ---
 ANOMALY_MODEL_PATH = "lstm_autoencoder.keras"
